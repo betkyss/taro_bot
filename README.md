@@ -34,8 +34,8 @@ newgrp docker
 
 ### 2. Клонирование репозитория
 ```bash
-git clone https://github.com/username/my_bot_project.git
-cd my_bot_project
+git clone https://github.com/betkyss/taro_bot.git
+cd taro_bot
 ```
 
 ### 3. Настройка окружения
