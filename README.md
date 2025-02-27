@@ -110,14 +110,3 @@ docker compose up -d
   ```bash
   git pull && docker compose build && docker compose up -d
   ```
-
-## Решение ошибок
-
-**Ошибка 409 Conflict:**  
-Убедитесь, что бот не запущен в нескольких экземплярах одновременно. Остановите старые контейнеры:
-```bash
-docker compose down
-```
-
-**Ошибка "Cannot write mode RGBA as JPEG":**  
-Убедитесь, что перед сохранением изображений в JPEG вызывается метод `.convert('RGB')`.
