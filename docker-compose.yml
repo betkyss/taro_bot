@@ -1,12 +1,14 @@
+version: '3.8'
 services:
   bot:
     build: .
     container_name: my_bot_container
     restart: unless-stopped
     environment:
-      - BOT_TOKEN=${BOT_TOKEN}
+      - BOT_TOKEN=${BOT_TOKEN}  # Переменная окружения, берётся из .env
     volumes:
-      - ./templates:/app/templates
-      - ./filter.png:/app/filter.png
-      - ./.env:/app/.env
-    command: python bot.py
+      - ./templates:/app/templates     # Монтируем локальную папку templates внутрь контейнера
+      - ./filter.png:/app/filter.png   # Монтируем локальный filter.png
+      - ./.env:/app/.env              # Монтируем .env (если нужно читать через load_dotenv)
+    command: python bot.py            # Переопределяем команду (если хотите запустить не CMD из Dockerfile)
+

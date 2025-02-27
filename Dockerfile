@@ -1,17 +1,23 @@
-# Базовый образ
+# Базовый образ — компактная версия Python 3.9
 FROM python:3.9-slim
 
-# Перемещаемся в рабочую директорию /app
+# Отключаем буферизацию вывода Python, чтобы логи сразу шли в stdout
+ENV PYTHONUNBUFFERED=1
+
+# Рабочая директория внутри контейнера
 WORKDIR /app
 
-# Скопируем requirements.txt и установим зависимости
+# Скопируем файл зависимостей и установим их
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Скопируем файлы бота и т.д.
+# Копируем код бота + нужные файлы
+# В данном примере filter.png и папка templates
+# тоже копируются внутрь контейнера (на случай, если нет volume).
 COPY bot.py .
 COPY filter.png .
 COPY templates ./templates
 
-# По умолчанию команда на запуск - можно переопределить в docker-compose
+# Команда по умолчанию — запуск бота
 CMD ["python", "bot.py"]
+

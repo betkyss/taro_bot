@@ -39,7 +39,9 @@ def list_templates():
     Возвращает список всех файлов из папки templates,
     у которых расширение .png / .jpg / .jpeg
     """
-    return [f for f in os.listdir(templates_dir) if f.lower().endswith(('.png','.jpg','.jpeg'))]
+    files = [f for f in os.listdir(templates_dir) if f.lower().endswith(('.png','.jpg','.jpeg'))]
+    print(f"[DEBUG] list_templates: Найдено {len(files)} файлов в {templates_dir} -> {files}")
+    return files
 
 def build_persona_actions_mapping():
     """
@@ -63,6 +65,8 @@ def build_persona_actions_mapping():
             mapping[persona] = {}
         # Каждой паре (persona, action) сопоставляем имя файла
         mapping[persona][action] = filename
+
+    print(f"[DEBUG] build_persona_actions_mapping -> {mapping}")
     return mapping
 
 def process_template_photo(template_img: Image.Image, user_photo_img: Image.Image) -> Image.Image:
@@ -71,28 +75,35 @@ def process_template_photo(template_img: Image.Image, user_photo_img: Image.Imag
     используя апскейл, рандомный поворот/сдвиг, фильтр, размытие левого края.
     Возвращает итоговое RGB-изображение.
     """
+    print("[DEBUG] Начало process_template_photo...")
     w, h = template_img.size
+    print(f"[DEBUG] Размер шаблона (template_img): {w}x{h}")
     arr = np.array(template_img)
+    
     # Определяем пиксели, где "зелёный" цвет
     green = (arr[:, :, 0] < 100) & (arr[:, :, 1] > 200) & (arr[:, :, 2] < 100)
     mask_orig = Image.fromarray((green * 255).astype(np.uint8), mode='L')
     bbox = mask_orig.getbbox()
+    print(f"[DEBUG] bbox зелёной области: {bbox}")
     if not bbox:
         # Если зелёного не найдено, возвращаем просто шаблон (переведём в RGB)
+        print("[DEBUG] Не найдена зелёная область. Возвращаем оригинал в RGB.")
         return template_img.convert('RGB')
 
     # Центр прямоугольника зелёной области
     cx_orig = (bbox[0] + bbox[2]) // 2
     cy_orig = (bbox[1] + bbox[3]) // 2
+    print(f"[DEBUG] Центр зелёной области (cx_orig, cy_orig): ({cx_orig}, {cy_orig})")
 
     # Увеличиваем шаблон (апскейл)
     up_w, up_h = int(w * upscale_factor), int(h * upscale_factor)
+    print(f"[DEBUG] Апскейл шаблона до: {up_w}x{up_h}")
     template_up = template_img.resize((up_w, up_h), Image.BICUBIC).convert('RGBA')
     cx, cy = int(cx_orig * upscale_factor), int(cy_orig * upscale_factor)
     bbox_up = (
-        int(bbox[0] * upscale_factor), 
+        int(bbox[0] * upscale_factor),
         int(bbox[1] * upscale_factor),
-        int(bbox[2] * upscale_factor), 
+        int(bbox[2] * upscale_factor),
         int(bbox[3] * upscale_factor)
     )
     base_w = bbox_up[2] - bbox_up[0]
@@ -104,10 +115,12 @@ def process_template_photo(template_img: Image.Image, user_photo_img: Image.Imag
     # Увеличиваем фото пользователя
     user_photo_img = user_photo_img.convert('RGBA')
     p_w, p_h = user_photo_img.size
+    print(f"[DEBUG] Размер входного фото пользователя: {p_w}x{p_h}")
     photo_up = user_photo_img.resize((int(p_w * upscale_factor), int(p_h * upscale_factor)), Image.BICUBIC)
     pu_w, pu_h = photo_up.size
     # Вычисляем масштаб, чтобы фото покрывало зелёную область
     sf = max(crop_w / pu_w, crop_h / pu_h)
+    print(f"[DEBUG] Масштаб для фото: {sf:.2f}")
     photo_scaled = photo_up.resize((int(pu_w * sf), int(pu_h * sf)), Image.BICUBIC)
     ps_w, ps_h = photo_scaled.size
 
@@ -115,22 +128,25 @@ def process_template_photo(template_img: Image.Image, user_photo_img: Image.Imag
     crop_left = (ps_w - crop_w) // 2
     crop_top = (ps_h - crop_h) // 2
     cropped_photo = photo_scaled.crop((crop_left, crop_top, crop_left + crop_w, crop_top + crop_h))
+    print(f"[DEBUG] Кроп фото до: {crop_w}x{crop_h}")
 
     # Случайный поворот и сдвиг
     angle = random.choice([-1, 1]) * random.randint(min_rotation, max_rotation)
-    dx = random.randint(min_shift, max_shift) * random.choice([-1, 1])
-    dy = random.randint(min_shift, max_shift) * random.choice([-1, 1])
+    dx_ = random.randint(min_shift, max_shift) * random.choice([-1, 1])
+    dy_ = random.randint(min_shift, max_shift) * random.choice([-1, 1])
+    print(f"[DEBUG] Поворот: {angle}°, сдвиг: dx={dx_}, dy={dy_}")
     rotated_photo = cropped_photo.rotate(
         angle, expand=True, resample=Image.BICUBIC, fillcolor=(0, 0, 0, 0)
     )
 
     # Координаты вставки в шаблон (центр зелёной области + случайный сдвиг)
-    target_center = (cx + dx, cy + dy)
+    target_center = (cx + dx_, cy + dy_)
     paste_x = target_center[0] - (rotated_photo.width // 2)
     paste_y = target_center[1] - (rotated_photo.height // 2)
 
     # Загружаем фильтр и накладываем его поверх
     filter_img = Image.open(filter_path).convert('RGBA')
+    print(f"[DEBUG] Загрузка и ресайз фильтра: {filter_path}")
     filter_resized = filter_img.resize((cropped_photo.width, cropped_photo.height + 30), Image.BICUBIC)
     rotated_filter = filter_resized.rotate(angle, expand=True, resample=Image.BICUBIC, fillcolor=(0, 0, 0, 0))
     composite = Image.new('RGBA', rotated_filter.size, (0, 0, 0, 0))
@@ -175,11 +191,14 @@ def process_template_photo(template_img: Image.Image, user_photo_img: Image.Imag
 
     # Корректируем размеры, если слишком маленькие/большие
     if final_img.width == 0 or final_img.height == 0:
+        print("[DEBUG] Предупреждение: получен 0 размер итогового изображения. Устанавливаем 1x1.")
         final_img = final_img.resize((1, 1))
     if final_img.width > MAX_TELEGRAM_DIM or final_img.height > MAX_TELEGRAM_DIM:
+        print("[DEBUG] Слишком большое изображение, уменьшаем thumbnail.")
         final_img.thumbnail((MAX_TELEGRAM_DIM, MAX_TELEGRAM_DIM))
 
     # JPEG не поддерживает альфа-канал, переводим в RGB
+    print(f"[DEBUG] Завершение process_template_photo. Итоговый размер: {final_img.size}")
     return final_img.convert('RGB')
 
 @bot.message_handler(commands=['start'])
@@ -187,6 +206,7 @@ def cmd_start(message):
     """
     Запуск. Показываем список доступных персонажей (к примеру, IREN или JUL).
     """
+    print("[DEBUG] /start команду вызвал пользователь:", message.chat.id)
     mapping = build_persona_actions_mapping()
     if not mapping:
         bot.send_message(message.chat.id, "Нет шаблонов.")
@@ -211,6 +231,7 @@ def choose_persona(call):
     Выбор конкретного персонажа. После выбора → предлагаются действия.
     """
     persona = call.data.replace("persona_", "")
+    print(f"[DEBUG] Пользователь {call.message.chat.id} выбрал персонажа: {persona}")
     mapping = build_persona_actions_mapping()
     if persona not in mapping:
         bot.answer_callback_query(call.id, text="Такого персонажа нет.")
@@ -234,6 +255,7 @@ def choose_action(call):
     """
     action = call.data.replace("action_", "")
     chat_id = call.message.chat.id
+    print(f"[DEBUG] Пользователь {chat_id} выбрал действие: {action}")
     persona = user_data.get(chat_id, {}).get("persona")
     if not persona:
         bot.answer_callback_query(call.id, text="Сначала выберите персонажа.")
@@ -252,7 +274,9 @@ def handle_photo_or_document(message):
     пробуем открыть как изображение и вставляем в шаблон.
     """
     chat_id = message.chat.id
+    print(f"[DEBUG] handle_photo_or_document от пользователя {chat_id}. Тип: {message.content_type}")
     if user_data.get(chat_id, {}).get("state") != "waiting_photo":
+        print("[DEBUG] Но пользователь не в состоянии waiting_photo. Игнорируем.")
         bot.send_message(chat_id, "Сначала выберите шаблон /start.")
         return
 
@@ -262,13 +286,16 @@ def handle_photo_or_document(message):
     persona = user_data[chat_id]["persona"]
     action = user_data[chat_id]["action"]
     mapping = build_persona_actions_mapping()
+    print(f"[DEBUG] У пользователя {chat_id} текущий persona={persona}, action={action}")
 
     # Находим соответствующий шаблон
     tmpl_filename = mapping[persona][action]
     template_path = os.path.join(templates_dir, tmpl_filename)
     if not os.path.exists(template_path):
+        print("[DEBUG] Шаблон не найден:", template_path)
         bot.send_message(chat_id, "Шаблон не найден.")
         return
+    print("[DEBUG] Используем шаблон:", template_path)
 
     # Получаем file_id для загрузки
     if message.content_type == 'photo':
@@ -276,6 +303,7 @@ def handle_photo_or_document(message):
     else:
         # document
         file_id = message.document.file_id
+    print(f"[DEBUG] Скачиваем файл с file_id={file_id}")
 
     # Скачиваем файл
     file_info = bot.get_file(file_id)
@@ -285,24 +313,29 @@ def handle_photo_or_document(message):
     # Пробуем открыть как изображение
     try:
         user_photo = Image.open(user_photo_buf)
-    except:
+        print(f"[DEBUG] Успешно открыли фото. Размер: {user_photo.size}")
+    except Exception as e:
+        print("[DEBUG] Не удалось открыть файл как изображение:", e)
         bot.send_message(chat_id, "Не удалось открыть файл как изображение.")
         return
 
     # Открываем шаблон и обрабатываем
     template_img = Image.open(template_path)
+    print(f"[DEBUG] Открыли шаблон. Размер: {template_img.size}")
     final_img = process_template_photo(template_img, user_photo)
 
     # Сохраняем результат в буфер
     out_buf = io.BytesIO()
     final_img.save(out_buf, format='JPEG', quality=90)
     out_buf.seek(0)
+    print("[DEBUG] Готовое изображение сохранено в буфер.")
 
     # Кнопка "Создать ещё" (возвращает к /start)
     again_markup = InlineKeyboardMarkup()
     again_markup.add(InlineKeyboardButton("🔄Сгенерировать фото", callback_data="create_more"))
 
     # Отправляем результат
+    print(f"[DEBUG] Отправляем конечное изображение пользователю {chat_id}.")
     bot.send_photo(chat_id, out_buf, caption="✅ Готово!", reply_markup=again_markup)
 
     # Сбрасываем состояние
@@ -316,12 +349,15 @@ def callback_create_more(call):
     """
     При нажатии на "Создать ещё" просто повторяем процесс (вызываем /start).
     """
+    print("[DEBUG] callback_create_more: пользователь хочет создать ещё.")
     bot.answer_callback_query(call.id)
     cmd_start(call.message)
 
 if __name__ == "__main__":
     # Удаляем возможный Webhook, если он активен (на всякий случай)
+    print("[DEBUG] Удаляем вебхук, если был установлен.")
     bot.remove_webhook()
-    # Запускаем поллинг ровно один раз
+    # Запускаем поллинг
+    print("[DEBUG] Запуск bot.infinity_polling()")
     bot.infinity_polling()
 
