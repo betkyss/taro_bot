@@ -1,5 +1,3 @@
-import traceback
-import time
 import os
 import io
 import math
@@ -356,12 +354,5 @@ def callback_create_more(call):
     cmd_start(call.message)
 
 if __name__ == "__main__":
-    bot.remove_webhook()
-    while True:
-        try:
-            bot.infinity_polling()
-        except Exception as e:
-            print("[FATAL ERROR]", e)
-            traceback.print_exc()
-            print("Перезапуск через 5 секунд...")
-            time.sleep(5)
+    print("Бот запущен!")
+    bot.infinity_polling()
