@@ -1,3 +1,4 @@
+import time
 import os
 import io
 import math
@@ -354,10 +355,11 @@ def callback_create_more(call):
     cmd_start(call.message)
 
 if __name__ == "__main__":
-    # Удаляем возможный Webhook, если он активен (на всякий случай)
-    print("[DEBUG] Удаляем вебхук, если был установлен.")
     bot.remove_webhook()
-    # Запускаем поллинг
-    print("[DEBUG] Запуск bot.infinity_polling()")
-    bot.infinity_polling()
-
+    while True:
+        try:
+            bot.infinity_polling()
+        except Exception as e:
+            print(f"Произошла ошибка: {e}")
+            print("Перезапуск бота через 5 секунд...")
+            time.sleep(5)
