@@ -1,3 +1,5 @@
+import traceback
+import time
 import os
 import io
 import math
@@ -26,7 +28,9 @@ max_shift = 15
 min_rotation = 2
 max_rotation = 4
 scale_pixels = 35
-upscale_factor = 5.0
+# НЕ используем фиксированный upscale_factor = 5.0,
+# а вычисляем его динамически в compute_upscale_factor
+desired_factor = 5.0
 thickness = 25
 box_blur_radius = 5
 MAX_TELEGRAM_DIM = 4096
@@ -69,6 +73,32 @@ def build_persona_actions_mapping():
     print(f"[DEBUG] build_persona_actions_mapping -> {mapping}")
     return mapping
 
+def compute_upscale_factor(template_img_size, max_dim=4096, desired_factor=5.0):
+    """
+    Если увеличение в desired_factor раз приводит к тому,
+    что ширина/высота шаблона > max_dim,
+    уменьшим factor так, чтобы точно уложиться в max_dim.
+    """
+    w, h = template_img_size
+    if w == 0 or h == 0:
+        return 1.0  # страховка от деления на ноль
+
+    upscale_w = w * desired_factor
+    upscale_h = h * desired_factor
+
+    # Рассчитываем максимально возможный factor, который не превысит max_dim
+    scale_for_w = max_dim / w
+    scale_for_h = max_dim / h
+    max_possible_factor = min(scale_for_w, scale_for_h)
+
+    if upscale_w > max_dim or upscale_h > max_dim:
+        # ограничим factor
+        limited_factor = min(desired_factor, max_possible_factor)
+        print(f"[DEBUG] Ограничиваем upscale_factor c {desired_factor} до {limited_factor:.2f}, чтобы не превысить {max_dim}x{max_dim}.")
+        return limited_factor
+    else:
+        return desired_factor
+
 def process_template_photo(template_img: Image.Image, user_photo_img: Image.Image) -> Image.Image:
     """
     Вставляет user_photo_img в зелёную область template_img,
@@ -95,20 +125,23 @@ def process_template_photo(template_img: Image.Image, user_photo_img: Image.Imag
     cy_orig = (bbox[1] + bbox[3]) // 2
     print(f"[DEBUG] Центр зелёной области (cx_orig, cy_orig): ({cx_orig}, {cy_orig})")
 
-    # Увеличиваем шаблон (апскейл)
-    up_w, up_h = int(w * upscale_factor), int(h * upscale_factor)
+    # --- Вычисляем динамический upscale_factor ---
+    factor = compute_upscale_factor((w, h), max_dim=MAX_TELEGRAM_DIM, desired_factor=desired_factor)
+    print(f"[DEBUG] Итоговый upscale_factor: {factor:.2f}")
+
+    up_w, up_h = int(w * factor), int(h * factor)
     print(f"[DEBUG] Апскейл шаблона до: {up_w}x{up_h}")
     template_up = template_img.resize((up_w, up_h), Image.BICUBIC).convert('RGBA')
-    cx, cy = int(cx_orig * upscale_factor), int(cy_orig * upscale_factor)
+    cx, cy = int(cx_orig * factor), int(cy_orig * factor)
     bbox_up = (
-        int(bbox[0] * upscale_factor),
-        int(bbox[1] * upscale_factor),
-        int(bbox[2] * upscale_factor),
-        int(bbox[3] * upscale_factor)
+        int(bbox[0] * factor),
+        int(bbox[1] * factor),
+        int(bbox[2] * factor),
+        int(bbox[3] * factor)
     )
     base_w = bbox_up[2] - bbox_up[0]
     base_h = bbox_up[3] - bbox_up[1]
-    scale_pixels_up = int(scale_pixels * upscale_factor)
+    scale_pixels_up = int(scale_pixels * factor)
     crop_w = base_w + scale_pixels_up
     crop_h = base_h + scale_pixels_up
 
@@ -116,7 +149,7 @@ def process_template_photo(template_img: Image.Image, user_photo_img: Image.Imag
     user_photo_img = user_photo_img.convert('RGBA')
     p_w, p_h = user_photo_img.size
     print(f"[DEBUG] Размер входного фото пользователя: {p_w}x{p_h}")
-    photo_up = user_photo_img.resize((int(p_w * upscale_factor), int(p_h * upscale_factor)), Image.BICUBIC)
+    photo_up = user_photo_img.resize((int(p_w * factor), int(p_h * factor)), Image.BICUBIC)
     pu_w, pu_h = photo_up.size
     # Вычисляем масштаб, чтобы фото покрывало зелёную область
     sf = max(crop_w / pu_w, crop_h / pu_h)
@@ -145,8 +178,8 @@ def process_template_photo(template_img: Image.Image, user_photo_img: Image.Imag
     paste_y = target_center[1] - (rotated_photo.height // 2)
 
     # Загружаем фильтр и накладываем его поверх
-    filter_img = Image.open(filter_path).convert('RGBA')
     print(f"[DEBUG] Загрузка и ресайз фильтра: {filter_path}")
+    filter_img = Image.open(filter_path).convert('RGBA')
     filter_resized = filter_img.resize((cropped_photo.width, cropped_photo.height + 30), Image.BICUBIC)
     rotated_filter = filter_resized.rotate(angle, expand=True, resample=Image.BICUBIC, fillcolor=(0, 0, 0, 0))
     composite = Image.new('RGBA', rotated_filter.size, (0, 0, 0, 0))
@@ -354,5 +387,14 @@ def callback_create_more(call):
     cmd_start(call.message)
 
 if __name__ == "__main__":
-    print("Бот запущен!")
-    bot.infinity_polling()
+    bot.remove_webhook()
+    while True:
+        try:
+            print("[DEBUG] Запуск bot.infinity_polling()")
+            bot.infinity_polling()
+        except Exception as e:
+            print("[FATAL ERROR]", e)
+            traceback.print_exc()
+            print("Перезапуск через 5 секунд...")
+            time.sleep(5)
+
