@@ -1,0 +1,12 @@
+services:
+  bot:
+    build: .
+    container_name: my_bot_container
+    restart: unless-stopped
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+    volumes:
+      - ./templates:/app/templates
+      - ./filter.png:/app/filter.png
+      - ./.env:/app/.env
+    command: python bot.py
