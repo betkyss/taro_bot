@@ -1,3 +1,4 @@
+import traceback
 import time
 import os
 import io
@@ -360,6 +361,7 @@ if __name__ == "__main__":
         try:
             bot.infinity_polling()
         except Exception as e:
-            print(f"Произошла ошибка: {e}")
-            print("Перезапуск бота через 5 секунд...")
+            print("[FATAL ERROR]", e)
+            traceback.print_exc()
+            print("Перезапуск через 5 секунд...")
             time.sleep(5)
