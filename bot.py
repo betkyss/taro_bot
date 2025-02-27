@@ -1,16 +1,17 @@
-import traceback
-import time
 import os
 import io
 import math
 import random
+import time
+import traceback
 import numpy as np
+
 from dotenv import load_dotenv
 from PIL import Image, ImageDraw, ImageFilter
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# Загружаем переменные среды, где лежит BOT_TOKEN
+# Загружаем переменные среды (где лежит BOT_TOKEN)
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
@@ -18,7 +19,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 bot = telebot.TeleBot(BOT_TOKEN)
 print("Бот включён и готов к работе.")
 
-# Папка с шаблонами и путём к фильтру
+# Папка с шаблонами и путь к фильтру
 templates_dir = 'templates'
 filter_path = 'filter.png'
 
@@ -28,14 +29,12 @@ max_shift = 15
 min_rotation = 2
 max_rotation = 4
 scale_pixels = 35
-# НЕ используем фиксированный upscale_factor = 5.0,
-# а вычисляем его динамически в compute_upscale_factor
-desired_factor = 5.0
+upscale_factor = 5.0        # Здесь выставляем 5-кратное увеличение
 thickness = 25
 box_blur_radius = 5
-MAX_TELEGRAM_DIM = 4096
+MAX_TELEGRAM_DIM = 4096     # Максимальный размер для отправки в Telegram
 
-# Хранилище данных по пользователям (выбранный персонаж, действие, этап и т.д.)
+# Хранилище данных по пользователям (выбранный персонаж, действие и т. д.)
 user_data = {}
 
 def list_templates():
@@ -43,7 +42,7 @@ def list_templates():
     Возвращает список всех файлов из папки templates,
     у которых расширение .png / .jpg / .jpeg
     """
-    files = [f for f in os.listdir(templates_dir) if f.lower().endswith(('.png','.jpg','.jpeg'))]
+    files = [f for f in os.listdir(templates_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
     print(f"[DEBUG] list_templates: Найдено {len(files)} файлов в {templates_dir} -> {files}")
     return files
 
@@ -73,75 +72,54 @@ def build_persona_actions_mapping():
     print(f"[DEBUG] build_persona_actions_mapping -> {mapping}")
     return mapping
 
-def compute_upscale_factor(template_img_size, max_dim=4096, desired_factor=5.0):
+def process_template_photo(template_img: Image.Image, user_photo_img: Image.Image) -> bytes:
     """
-    Если увеличение в desired_factor раз приводит к тому,
-    что ширина/высота шаблона > max_dim,
-    уменьшим factor так, чтобы точно уложиться в max_dim.
-    """
-    w, h = template_img_size
-    if w == 0 or h == 0:
-        return 1.0  # страховка от деления на ноль
-
-    upscale_w = w * desired_factor
-    upscale_h = h * desired_factor
-
-    # Рассчитываем максимально возможный factor, который не превысит max_dim
-    scale_for_w = max_dim / w
-    scale_for_h = max_dim / h
-    max_possible_factor = min(scale_for_w, scale_for_h)
-
-    if upscale_w > max_dim or upscale_h > max_dim:
-        # ограничим factor
-        limited_factor = min(desired_factor, max_possible_factor)
-        print(f"[DEBUG] Ограничиваем upscale_factor c {desired_factor} до {limited_factor:.2f}, чтобы не превысить {max_dim}x{max_dim}.")
-        return limited_factor
-    else:
-        return desired_factor
-
-def process_template_photo(template_img: Image.Image, user_photo_img: Image.Image) -> Image.Image:
-    """
-    Вставляет user_photo_img в зелёную область template_img,
-    используя апскейл, рандомный поворот/сдвиг, фильтр, размытие левого края.
-    Возвращает итоговое RGB-изображение.
+    1) Вставляет user_photo_img в зелёную область template_img,
+       используя upscale_factor = 5.0, поворот/сдвиг, фильтр, размытие.
+    2) Сохраняет результат (большое изображение) во временный файл -> закрывает объект.
+    3) Заново открывает файл, если размер > MAX_TELEGRAM_DIM, делает thumbnail,
+       снова сохраняет в BytesIO и возвращает байты итогового JPEG.
     """
     print("[DEBUG] Начало process_template_photo...")
     w, h = template_img.size
     print(f"[DEBUG] Размер шаблона (template_img): {w}x{h}")
     arr = np.array(template_img)
-    
+
     # Определяем пиксели, где "зелёный" цвет
     green = (arr[:, :, 0] < 100) & (arr[:, :, 1] > 200) & (arr[:, :, 2] < 100)
     mask_orig = Image.fromarray((green * 255).astype(np.uint8), mode='L')
     bbox = mask_orig.getbbox()
     print(f"[DEBUG] bbox зелёной области: {bbox}")
     if not bbox:
-        # Если зелёного не найдено, возвращаем просто шаблон (переведём в RGB)
+        # Если зелёного не найдено, возвращаем просто шаблон (в RGB)
         print("[DEBUG] Не найдена зелёная область. Возвращаем оригинал в RGB.")
-        return template_img.convert('RGB')
+        # Сразу возвращаем содержимое в байтах
+        buf = io.BytesIO()
+        template_img.convert('RGB').save(buf, format='JPEG', quality=90)
+        return buf.getvalue()
 
     # Центр прямоугольника зелёной области
     cx_orig = (bbox[0] + bbox[2]) // 2
     cy_orig = (bbox[1] + bbox[3]) // 2
     print(f"[DEBUG] Центр зелёной области (cx_orig, cy_orig): ({cx_orig}, {cy_orig})")
 
-    # --- Вычисляем динамический upscale_factor ---
-    factor = compute_upscale_factor((w, h), max_dim=MAX_TELEGRAM_DIM, desired_factor=desired_factor)
-    print(f"[DEBUG] Итоговый upscale_factor: {factor:.2f}")
-
-    up_w, up_h = int(w * factor), int(h * factor)
+    # 1) Увеличиваем шаблон (апскейл) в 5 раз
+    up_w, up_h = int(w * upscale_factor), int(h * upscale_factor)
     print(f"[DEBUG] Апскейл шаблона до: {up_w}x{up_h}")
     template_up = template_img.resize((up_w, up_h), Image.BICUBIC).convert('RGBA')
-    cx, cy = int(cx_orig * factor), int(cy_orig * factor)
+
+    # Переводим координаты зелёной области
+    cx, cy = int(cx_orig * upscale_factor), int(cy_orig * upscale_factor)
     bbox_up = (
-        int(bbox[0] * factor),
-        int(bbox[1] * factor),
-        int(bbox[2] * factor),
-        int(bbox[3] * factor)
+        int(bbox[0] * upscale_factor),
+        int(bbox[1] * upscale_factor),
+        int(bbox[2] * upscale_factor),
+        int(bbox[3] * upscale_factor)
     )
+
     base_w = bbox_up[2] - bbox_up[0]
     base_h = bbox_up[3] - bbox_up[1]
-    scale_pixels_up = int(scale_pixels * factor)
+    scale_pixels_up = int(scale_pixels * upscale_factor)
     crop_w = base_w + scale_pixels_up
     crop_h = base_h + scale_pixels_up
 
@@ -149,8 +127,9 @@ def process_template_photo(template_img: Image.Image, user_photo_img: Image.Imag
     user_photo_img = user_photo_img.convert('RGBA')
     p_w, p_h = user_photo_img.size
     print(f"[DEBUG] Размер входного фото пользователя: {p_w}x{p_h}")
-    photo_up = user_photo_img.resize((int(p_w * factor), int(p_h * factor)), Image.BICUBIC)
+    photo_up = user_photo_img.resize((int(p_w * upscale_factor), int(p_h * upscale_factor)), Image.BICUBIC)
     pu_w, pu_h = photo_up.size
+
     # Вычисляем масштаб, чтобы фото покрывало зелёную область
     sf = max(crop_w / pu_w, crop_h / pu_h)
     print(f"[DEBUG] Масштаб для фото: {sf:.2f}")
@@ -178,15 +157,15 @@ def process_template_photo(template_img: Image.Image, user_photo_img: Image.Imag
     paste_y = target_center[1] - (rotated_photo.height // 2)
 
     # Загружаем фильтр и накладываем его поверх
-    print(f"[DEBUG] Загрузка и ресайз фильтра: {filter_path}")
     filter_img = Image.open(filter_path).convert('RGBA')
+    print(f"[DEBUG] Загрузка и ресайз фильтра: {filter_path}")
     filter_resized = filter_img.resize((cropped_photo.width, cropped_photo.height + 30), Image.BICUBIC)
     rotated_filter = filter_resized.rotate(angle, expand=True, resample=Image.BICUBIC, fillcolor=(0, 0, 0, 0))
     composite = Image.new('RGBA', rotated_filter.size, (0, 0, 0, 0))
     composite.paste(rotated_photo, (0, 0))
     final_composite = Image.alpha_composite(composite, rotated_filter)
 
-    # Вставляем всё в изначальный (увеличенный) шаблон
+    # Вставляем всё в увеличенный шаблон
     layer = Image.new('RGBA', template_up.size, (0, 0, 0, 0))
     layer.paste(final_composite, (paste_x, paste_y))
     final_img = Image.alpha_composite(template_up, layer)
@@ -212,32 +191,50 @@ def process_template_photo(template_img: Image.Image, user_photo_img: Image.Imag
         nx, ny = (-dy_edge / length, dx_edge / length)
         offset = thickness / 2
         polygon = [
-            (p1[0] + nx*offset, p1[1] + ny*offset),
-            (p2[0] + nx*offset, p2[1] + ny*offset),
-            (p2[0] - nx*offset, p2[1] - ny*offset),
-            (p1[0] - nx*offset, p1[1] - ny*offset)
+            (p1[0] + nx * offset, p1[1] + ny * offset),
+            (p2[0] + nx * offset, p2[1] + ny * offset),
+            (p2[0] - nx * offset, p2[1] - ny * offset),
+            (p1[0] - nx * offset, p1[1] - ny * offset)
         ]
         mask = Image.new('L', final_img.size, 0)
         ImageDraw.Draw(mask).polygon(polygon, fill=255)
         blurred = final_img.filter(ImageFilter.BoxBlur(box_blur_radius))
         final_img = Image.composite(blurred, final_img, mask)
 
-    # Корректируем размеры, если слишком маленькие/большие
-    if final_img.width == 0 or final_img.height == 0:
-        print("[DEBUG] Предупреждение: получен 0 размер итогового изображения. Устанавливаем 1x1.")
-        final_img = final_img.resize((1, 1))
-    if final_img.width > MAX_TELEGRAM_DIM or final_img.height > MAX_TELEGRAM_DIM:
-        print("[DEBUG] Слишком большое изображение, уменьшаем thumbnail.")
-        final_img.thumbnail((MAX_TELEGRAM_DIM, MAX_TELEGRAM_DIM))
-
     # JPEG не поддерживает альфа-канал, переводим в RGB
-    print(f"[DEBUG] Завершение process_template_photo. Итоговый размер: {final_img.size}")
-    return final_img.convert('RGB')
+    final_img = final_img.convert('RGB')
+
+    # --- Дополнительный блок: Сохраняем во временный файл и закрываем, чтобы освободить память ---
+    temp_filename = "temp_upscaled_output.jpg"
+    print("[DEBUG] Сохраняем 5× (большое) изображение во временный файл:", temp_filename)
+    final_img.save(temp_filename, format="JPEG", quality=95)
+    final_img.close()  # Освобождаем память, связанную с большим изображением
+
+    # Теперь заново открываем сохранённое изображение
+    reopened_img = Image.open(temp_filename)
+
+    # Если слишком большое, уменьшим (thumbnail) до MAX_TELEGRAM_DIM
+    if reopened_img.width > MAX_TELEGRAM_DIM or reopened_img.height > MAX_TELEGRAM_DIM:
+        print("[DEBUG] Слишком большое изображение, делаем thumbnail...")
+        reopened_img.thumbnail((MAX_TELEGRAM_DIM, MAX_TELEGRAM_DIM))
+
+    # Сохраняем финальный результат в буфер
+    out_buf = io.BytesIO()
+    reopened_img.save(out_buf, format='JPEG', quality=90)
+    out_buf.seek(0)
+
+    # Закрываем reopened_img и удаляем временный файл
+    reopened_img.close()
+    os.remove(temp_filename)
+
+    print(f"[DEBUG] Завершение process_template_photo. Итоговый размер: {out_buf.getbuffer().nbytes} байт")
+    # Возвращаем байты JPEG, готовые к отправке
+    return out_buf.getvalue()
 
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     """
-    Запуск. Показываем список доступных персонажей (к примеру, IREN или JUL).
+    Запуск. Показываем список доступных персонажей (например, IREN или JUL).
     """
     print("[DEBUG] /start команду вызвал пользователь:", message.chat.id)
     mapping = build_persona_actions_mapping()
@@ -273,7 +270,7 @@ def choose_persona(call):
     user_data[call.message.chat.id] = {"persona": persona, "state": "choose_action"}
     bot.answer_callback_query(call.id, text=f"Выбран персонаж: {persona}")
 
-    # Предлагаем действия (aura, finance, love и т.д.)
+    # Предлагаем действия (например, aura, finance, love...)
     actions = sorted(mapping[persona].keys())
     markup = InlineKeyboardMarkup()
     for act in actions:
@@ -300,7 +297,7 @@ def choose_action(call):
     bot.answer_callback_query(call.id, text=f"Выбрано: {action}")
     bot.send_message(chat_id, "📥Отправь фото для вставки")
 
-@bot.message_handler(content_types=['photo','document'])
+@bot.message_handler(content_types=['photo', 'document'])
 def handle_photo_or_document(message):
     """
     Обрабатываем как фото или документ (если пользователь присылает файл),
@@ -308,6 +305,8 @@ def handle_photo_or_document(message):
     """
     chat_id = message.chat.id
     print(f"[DEBUG] handle_photo_or_document от пользователя {chat_id}. Тип: {message.content_type}")
+
+    # Проверяем, действительно ли пользователь ждёт фото
     if user_data.get(chat_id, {}).get("state") != "waiting_photo":
         print("[DEBUG] Но пользователь не в состоянии waiting_photo. Игнорируем.")
         bot.send_message(chat_id, "Сначала выберите шаблон /start.")
@@ -355,27 +354,30 @@ def handle_photo_or_document(message):
     # Открываем шаблон и обрабатываем
     template_img = Image.open(template_path)
     print(f"[DEBUG] Открыли шаблон. Размер: {template_img.size}")
-    final_img = process_template_photo(template_img, user_photo)
 
-    # Сохраняем результат в буфер
-    out_buf = io.BytesIO()
-    final_img.save(out_buf, format='JPEG', quality=90)
-    out_buf.seek(0)
-    print("[DEBUG] Готовое изображение сохранено в буфер.")
+    # Создаём итоговое изображение (в виде байтов)
+    try:
+        result_bytes = process_template_photo(template_img, user_photo)
+    except Exception as e:
+        print("[DEBUG] Ошибка при процессинге фото:", e)
+        traceback.print_exc()
+        bot.send_message(chat_id, "Произошла ошибка при обработке изображения.")
+        return
 
+    # Отправляем результат
     # Кнопка "Создать ещё" (возвращает к /start)
     again_markup = InlineKeyboardMarkup()
     again_markup.add(InlineKeyboardButton("🔄Сгенерировать фото", callback_data="create_more"))
 
-    # Отправляем результат
     print(f"[DEBUG] Отправляем конечное изображение пользователю {chat_id}.")
-    bot.send_photo(chat_id, out_buf, caption="✅ Готово!", reply_markup=again_markup)
+    bot.send_photo(chat_id, result_bytes, caption="✅ Готово!", reply_markup=again_markup)
 
     # Сбрасываем состояние
     user_data[chat_id]["state"] = None
+
+    # Закрываем открытые объекты
     user_photo.close()
     template_img.close()
-    final_img.close()
 
 @bot.callback_query_handler(func=lambda call: call.data == "create_more")
 def callback_create_more(call):
@@ -387,10 +389,13 @@ def callback_create_more(call):
     cmd_start(call.message)
 
 if __name__ == "__main__":
+    print("[DEBUG] Удаляем вебхук, если был установлен.")
     bot.remove_webhook()
+    print("[DEBUG] Запуск bot.infinity_polling()")
+
+    # Обёртка, чтобы бот перезапускался при неперехваченных ошибках
     while True:
         try:
-            print("[DEBUG] Запуск bot.infinity_polling()")
             bot.infinity_polling()
         except Exception as e:
             print("[FATAL ERROR]", e)
