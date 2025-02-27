@@ -11,12 +11,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем код бота + нужные файлы
-# В данном примере filter.png и папка templates
-# тоже копируются внутрь контейнера (на случай, если нет volume).
+# Копируем код бота и нужные файлы (включая allowed_users.txt)
 COPY bot.py .
 COPY filter.png .
 COPY templates ./templates
+COPY allowed_users.txt . 
 
 # Команда по умолчанию — запуск бота
 CMD ["python", "bot.py"]

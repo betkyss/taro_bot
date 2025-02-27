@@ -8,7 +8,8 @@ services:
       - BOT_TOKEN=${BOT_TOKEN}  # Переменная окружения, берётся из .env
     volumes:
       - ./templates:/app/templates     # Монтируем локальную папку templates внутрь контейнера
-      - ./filter.png:/app/filter.png   # Монтируем локальный filter.png
-      - ./.env:/app/.env              # Монтируем .env (если нужно читать через load_dotenv)
-    command: python bot.py            # Переопределяем команду (если хотите запустить не CMD из Dockerfile)
+      - ./filter.png:/app/filter.png     # Монтируем локальный filter.png
+      - ./.env:/app/.env                 # Монтируем .env (если нужно читать через load_dotenv)
+      - ./allowed_users.txt:/app/allowed_users.txt  # Монтируем файл белого списка
+    command: python bot.py              # Переопределяем команду (если хотите запустить не CMD из Dockerfile)
 
