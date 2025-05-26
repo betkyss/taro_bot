@@ -2,3 +2,4 @@ python-dotenv
 pytelegrambotapi
 Pillow
 numpy
+opencv-python

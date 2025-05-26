@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   bot:
     build: .
@@ -7,9 +6,18 @@ services:
     environment:
       - BOT_TOKEN=${BOT_TOKEN}  # Переменная окружения, берётся из .env
     volumes:
-      - ./templates:/app/templates     # Монтируем локальную папку templates внутрь контейнера
-      - ./filter.png:/app/filter.png     # Монтируем локальный filter.png
-      - ./.env:/app/.env                 # Монтируем .env (если нужно читать через load_dotenv)
+      - ./templates:/app/templates           # Монтируем локальную папку templates внутрь контейнера
+      - ./filter.png:/app/filter.png         # Монтируем локальный filter.png
+      - ./.env:/app/.env                     # Монтируем .env (если нужно читать через load_dotenv)
       - ./allowed_users.txt:/app/allowed_users.txt  # Монтируем файл белого списка
-    command: python bot.py              # Переопределяем команду (если хотите запустить не CMD из Dockerfile)
+    command: python bot.py
+    networks:
+      - custom_network
+
+networks:
+  custom_network:
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.30.0.0/16
 
