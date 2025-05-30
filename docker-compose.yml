@@ -3,16 +3,51 @@ services:
     build: .
     container_name: my_bot_container
     restart: unless-stopped
+
+    # ─── Установим рабочую директорию
+    working_dir: /app
+
+    # ─── Переменные окружения
     environment:
-      - BOT_TOKEN=${BOT_TOKEN}  # Переменная окружения, берётся из .env
+      - BOT_TOKEN=${BOT_TOKEN}
+      - TZ=Europe/Moscow       # чтобы логи и datetime внутри контейнера были в вашем часовом поясе
+
+    # ─── Монтирование
     volumes:
-      - ./templates:/app/templates           # Монтируем локальную папку templates внутрь контейнера
-      - ./filter.png:/app/filter.png         # Монтируем локальный filter.png
-      - ./.env:/app/.env                     # Монтируем .env (если нужно читать через load_dotenv)
-      - ./allowed_users.txt:/app/allowed_users.txt  # Монтируем файл белого списка
+      - ./templates:/app/templates
+      - ./filter.png:/app/filter.png
+      - ./.env:/app/.env
+      - ./allowed_users.txt:/app/allowed_users.txt
+      - ./logs:/app/logs           # например, чтобы сохранять логи на хосте
+
+
+    # ─── Ограничение open files, если будут проблемы с большим количеством соединений
+    ulimits:
+      nofile:
+        soft: 1024
+        hard: 2048
+
+    # ─── Healthcheck, чтобы docker видел, жив ли ваш бот
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f bot.py || exit 1"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    # ─── Логи: ротация и размер
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
     command: python bot.py
+
     networks:
       - custom_network
+    mem_limit: 1g 
+    memswap_limit: 3g           # 1 ГБ RAM + 2 ГБ swap
 
 networks:
   custom_network:
