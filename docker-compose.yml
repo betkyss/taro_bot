@@ -1,0 +1,61 @@
+version: "3.9"
+
+services:
+  bot:
+    build: .
+    container_name: my_bot_container
+    restart: unless-stopped
+
+    # ─── Рабочая директория
+    working_dir: /app
+
+    # ─── Переменные окружения
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - TZ=Europe/Moscow        # локальное время внутри контейнера
+
+    # ─── Монтирования
+    volumes:
+      - ./templates:/app/templates
+      - ./filter.png:/app/filter.png
+      - ./.env:/app/.env
+      - ./allowed_users.txt:/app/allowed_users.txt
+      - ./logs:/app/logs        # хранить логи на хосте
+
+    # ─── Ограничение открытых файлов (при большом количестве соединений)
+    ulimits:
+      nofile:
+        soft: 1024
+        hard: 2048
+
+    # ─── Health-check
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f bot.py || exit 1"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    # ─── Логи: ротация и размер
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    command: python bot.py
+
+    networks:
+      - custom_network
+
+    # ─── Ограничения по памяти
+    mem_limit: 1g
+    memswap_limit: 3g          # 1 ГБ RAM + 2 ГБ swap
+
+networks:
+  custom_network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.31.0.0/16   # изменённый диапазон, не пересекающийся с уже существующими
