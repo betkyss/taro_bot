@@ -279,9 +279,15 @@ def process_template_with_multiple_photos(tpl_img: Image.Image, user_imgs: List[
             vecs = quad - center
             lens = np.linalg.norm(vecs, 1, keepdims=True)
             quad = quad + vecs / (lens + 1e-6) * scale_pixels * out_scale
-            wA, hA = np.linalg.norm(quad[0] - quad[1]), np.linalg.norm(quad[0] - quad[3])
-            wB, hB = np.linalg.norm(quad[2] - quad[3]), np.linalg.norm(quad[1] - quad[2])
-            long_side, short_side = int(max(hA, hB)), int(max(wA, wB))
+
+            # Считаем среднюю ширину и высоту, чтобы не искажать фото
+            width_top    = np.linalg.norm(quad[0] - quad[1])
+            width_bottom = np.linalg.norm(quad[2] - quad[3])
+            height_left  = np.linalg.norm(quad[0] - quad[3])
+            height_right = np.linalg.norm(quad[1] - quad[2])
+
+            short_side = int((width_top + width_bottom) / 2)
+            long_side  = int((height_left + height_right) / 2)
         else:
             (cx0, cy0), (w0, h0), ang = cv2.minAreaRect(scaled_cnt)
             long_side, short_side = int(max(w0, h0)), int(min(w0, h0))
