@@ -7,8 +7,10 @@ Telegram-бот для вставки НЕСКОЛЬКИХ фотографий 
 # ────────────────────────────────────────────────────────────────────
 # ► 0. ИМПОРТЫ
 # ────────────────────────────────────────────────────────────────────
-import io, os, math, random, traceback, warnings, sys, logging
+import io, os, math, random, traceback, warnings, sys, logging, time
 from typing import Dict, Any, List, Tuple, Optional
+
+import requests
 
 import numpy as np
 import cv2
@@ -51,6 +53,7 @@ min_rotation, max_rotation = 1, 3
 thickness, box_blur_radius = 25, 5
 MAX_PIXELS_TPL     = 80_000_000
 TG_PHOTO_LIMIT     = 10_485_760
+SEND_RETRIES       = 3
 VALID_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")
 MIN_CONTOUR_AREA = 1000 # Минимальная площадь зеленой области для учета
 
@@ -110,7 +113,7 @@ bot = telebot.TeleBot(BOT_TOKEN)
 import telebot.apihelper as tbh
 tbh.SEND_FILE_TIMEOUT = 120
 tbh.CONNECT_TIMEOUT = 30
-tbh.READ_TIMEOUT = 30
+tbh.READ_TIMEOUT = 120
 logging.info("Bot ready")
 
 # ────────────────────────────────────────────────────────────────────
@@ -164,6 +167,18 @@ def _save_jpeg(img: Image.Image, q: int = 95) -> bytes:
     img.convert("RGB").save(buf, "JPEG", quality=q)
     buf.seek(0)
     return buf.getvalue()
+
+def _safe_send(func, *args, **kwargs):
+    """Отправляет медиа с несколькими попытками при таймауте."""
+    for attempt in range(1, SEND_RETRIES + 1):
+        try:
+            return func(*args, **kwargs)
+        except requests.exceptions.ReadTimeout:
+            logging.warning(
+                f"Timeout при отправке (попытка {attempt}/{SEND_RETRIES})")
+            if attempt == SEND_RETRIES:
+                raise
+            time.sleep(2)
 
 # ────────────────────────────────────────────────────────────────────
 # ► 7. НОВЫЕ ФУНКЦИИ АНАЛИЗА И ОБРАБОТКИ
@@ -384,10 +399,10 @@ def request_next_photo(chat_id: int, message_id: Optional[int] = None):
             except Exception: pass
 
             if len(result_bytes) <= TG_PHOTO_LIMIT:
-                bot.send_photo(chat_id, result_bytes, caption=MSG_DONE, reply_markup=kb)
+                _safe_send(bot.send_photo, chat_id, result_bytes, caption=MSG_DONE, reply_markup=kb)
             else:
                 fname = "result.png" if result_bytes.startswith(b'\x89PNG') else "result.jpg"
-                bot.send_document(chat_id, (fname, result_bytes), caption=MSG_DONE, reply_markup=kb)
+                _safe_send(bot.send_document, chat_id, (fname, result_bytes), caption=MSG_DONE, reply_markup=kb)
 
             # Сбрасываем состояние для этого пользователя
             user_state[chat_id] = {}
