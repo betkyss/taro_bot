@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Telegram-бот для вставки фотографии пользователя в шаблон (зелёный/фильтр).
+Telegram-бот для вставки НЕСКОЛЬКИХ фотографий пользователя в шаблон.
 """
 
 # ────────────────────────────────────────────────────────────────────
@@ -32,7 +32,7 @@ import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
 
 # ────────────────────────────────────────────────────────────────────
-# ► 1. НАСТРОЙКА PIL  (отключаем «бомбу» на большие изображения)
+# ► 1. НАСТРОЙКА PIL
 # ────────────────────────────────────────────────────────────────────
 Image.MAX_IMAGE_PIXELS = None
 warnings.simplefilter('ignore', Image.DecompressionBombWarning)
@@ -40,18 +40,19 @@ warnings.simplefilter('ignore', Image.DecompressionBombWarning)
 # ────────────────────────────────────────────────────────────────────
 # ► 2. ГЛОБАЛЬНЫЕ КОНСТАНТЫ
 # ────────────────────────────────────────────────────────────────────
-templates_dir      = "templates"               # папка с шаблонами
-filter_path        = "filter.png"            # PNG-фильтр (с тенью 22 px)
-OUT_DIM            = 2048                      # итоговая длинная сторона
-scale_pixels       = 75                       # «запас» к прямоугольнику
-upscale_factor     = 0.5                       # внутренний апскейл
-SCALE_MONO         = 8                         # апскейл монолита
-min_shift, max_shift       = 2, 8             # случайный сдвиг
-min_rotation, max_rotation = 1, 3              # случайный угол
-thickness, box_blur_radius = 25, 5             # бокс-блюр левого края
-MAX_PIXELS_TPL     = 80_000_000                # потолок апскейла шаблона
-TG_PHOTO_LIMIT     = 10_485_760                # 10 МБ (Telegram)
+templates_dir      = "templates"
+filter_path        = "filter.png"
+OUT_DIM            = 2048
+scale_pixels       = 75
+upscale_factor     = 0.5
+SCALE_MONO         = 8
+min_shift, max_shift       = 2, 8
+min_rotation, max_rotation = 1, 3
+thickness, box_blur_radius = 25, 5
+MAX_PIXELS_TPL     = 80_000_000
+TG_PHOTO_LIMIT     = 10_485_760
 VALID_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")
+MIN_CONTOUR_AREA = 1000 # Минимальная площадь зеленой области для учета
 
 # ────────────────────────────────────────────────────────────────────
 # ► 3. ГОТОВЫЕ СООБЩЕНИЯ / ЭМОДЗИ
@@ -59,7 +60,7 @@ VALID_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")
 MSG_SELECT_PERSONA   = "🎭 Выберите персонажа:"
 MSG_SELECT_STAGE     = "📟 Выберите этап"
 MSG_SELECT_TEMPLATE  = "🖼️ Выберите шаблон"
-MSG_SEND_PHOTO       = "📥 Отправь фото для вставки"
+MSG_SEND_PHOTO       = "📥 Отправь фото {current_num} из {total_num}" # ИЗМЕНЕНО
 MSG_PROCESSING       = "⏳ Идёт обработка…"
 MSG_DONE             = "✅ Готово!"
 BTN_REGENERATE       = "Сгенерировать снова"
@@ -69,7 +70,6 @@ MSG_TEMPLATE_NOT_FOUND = "Шаблон не найден."
 MSG_ERROR_INTERNAL   = "⚠️ Внутренняя ошибка. Посмотрите логи."
 MSG_NO_TEMPLATES_FOUND = "Не найдено подходящих шаблонов для этого выбора."
 
-# Этот словарь теперь используется для получения красивых имен этапов
 STAGE_NAME_MAP = {
     "0": "0️⃣ (бесплатный расклад)",
     "1": "1️⃣ (рез-т платной д-ки)",
@@ -78,10 +78,9 @@ STAGE_NAME_MAP = {
 }
 
 # ────────────────────────────────────────────────────────────────────
-# ► 4. ЗАГРУЗКА «БЕЛОГО» СПИСКА ПОЛЬЗОВАТЕЛЕЙ (who can use the bot)
+# ► 4. ЗАГРУЗКА «БЕЛОГО» СПИСКА ПОЛЬЗОВАТЕЛЕЙ
 # ────────────────────────────────────────────────────────────────────
 def load_allowed_user_ids(fname: str = "allowed_users.txt") -> set[int]:
-    """Считывает allowed_users.txt → множество user_id (int)."""
     ids = set()
     if os.path.exists(fname):
         with open(fname, encoding="utf-8") as f:
@@ -94,7 +93,6 @@ def load_allowed_user_ids(fname: str = "allowed_users.txt") -> set[int]:
                         logging.warning(f"Не удалось прочитать User ID: {line} из {fname}")
     logging.info(f"Белый список: {len(ids)} ID загружено.")
     return ids
-
 
 ALLOWED_USER_IDS = load_allowed_user_ids()
 
@@ -109,34 +107,22 @@ if not BOT_TOKEN:
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# увеличиваем таймауты отправки файлов
 import telebot.apihelper as tbh
-
 tbh.SEND_FILE_TIMEOUT = 120
 tbh.CONNECT_TIMEOUT = 30
 tbh.READ_TIMEOUT = 30
-
 logging.info("Bot ready")
 
 # ────────────────────────────────────────────────────────────────────
-# ► 6. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (динамическое определение структуры)
+# ► 6. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ────────────────────────────────────────────────────────────────────
 def get_personas() -> list[str]:
-    """Получить список подпапок внутри templates/ (персонажей)."""
     if not os.path.exists(templates_dir) or not os.path.isdir(templates_dir):
         logging.error(f"Папка шаблонов '{templates_dir}' не найдена.")
         return []
-    return sorted(
-        d for d in os.listdir(templates_dir)
-        if os.path.isdir(os.path.join(templates_dir, d))
-    )
+    return sorted(d for d in os.listdir(templates_dir) if os.path.isdir(os.path.join(templates_dir, d)))
 
 def get_stages_for_persona(persona: str) -> List[Tuple[str, str]]:
-    """
-    Получает список этапов для персонажа.
-    Этапы - это подпапки с числовыми именами.
-    Возвращает список кортежей (имя_папки, отображаемое_имя).
-    """
     persona_path = os.path.join(templates_dir, persona)
     stages = []
     if os.path.isdir(persona_path):
@@ -145,13 +131,9 @@ def get_stages_for_persona(persona: str) -> List[Tuple[str, str]]:
             if os.path.isdir(item_path) and item.isdigit():
                 display_name = STAGE_NAME_MAP.get(item, f"Этап {item}")
                 stages.append((item, display_name))
-    return sorted(stages, key=lambda x: int(x[0])) # Сортируем по числовому значению
+    return sorted(stages, key=lambda x: int(x[0]))
 
 def get_templates_in_path(current_path: str) -> List[str]:
-    """
-    Получает список файлов шаблонов (картинок) в указанной папке.
-    Возвращает список имен файлов (без пути, но с расширением).
-    """
     templates = []
     if os.path.isdir(current_path):
         for item in os.listdir(current_path):
@@ -161,12 +143,9 @@ def get_templates_in_path(current_path: str) -> List[str]:
     return sorted(templates)
 
 def get_template_name_without_extension(filename: str) -> str:
-    """Удаляет расширение из имени файла."""
     return os.path.splitext(filename)[0]
 
-# --- Функции для обработки изображений (оставлены как есть, но можно вынести в отдельный модуль) ---
 def order_corners(pts: np.ndarray) -> np.ndarray:
-    """Сортировка 4 точек → TL, TR, BR, BL (для getPerspective)."""
     pts = np.asarray(pts, dtype="float32")
     s = pts.sum(1)
     diff = np.diff(pts, axis=1)
@@ -187,20 +166,45 @@ def _save_jpeg(img: Image.Image, q: int = 95) -> bytes:
     return buf.getvalue()
 
 # ────────────────────────────────────────────────────────────────────
-# ► 7. ОСНОВНАЯ ОБРАБОТКА ИЗОБРАЖЕНИЯ
+# ► 7. НОВЫЕ ФУНКЦИИ АНАЛИЗА И ОБРАБОТКИ
 # ────────────────────────────────────────────────────────────────────
-def process_template_photo(tpl_img: Image.Image, user_img: Image.Image) -> bytes:
+
+def find_and_sort_green_areas(tpl_img: Image.Image) -> List[np.ndarray]:
     """
-    Вставляет user_img в зелёный прямоугольник tpl_img и возвращает bytes.
-    Логика подробно прокомментирована внутри.
+    Находит все зеленые области в шаблоне, фильтрует слишком маленькие
+    и сортирует их слева направо по X-координате центра.
     """
-    # 7.1 --- АПСКЕЙЛ ШАБЛОНА ДО OUT_DIM (но не более 80 Мп)
+    tpl_rgba = tpl_img.convert("RGBA")
+    b, g, r, _ = np.asarray(tpl_rgba).transpose(2, 0, 1)
+    mask = ((g > 200) & (r < 100) & (b < 100)).astype(np.uint8) * 255
+
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # Фильтруем контуры по минимальной площади
+    significant_contours = [
+        cnt for cnt in cnts if cv2.contourArea(cnt) > MIN_CONTOUR_AREA
+    ]
+
+    if not significant_contours:
+        return []
+
+    # Сортируем контуры по X-координате их ограничивающего прямоугольника
+    # Это гарантирует обработку слева направо
+    sorted_contours = sorted(significant_contours, key=lambda c: cv2.boundingRect(c)[0])
+    
+    return sorted_contours
+
+def process_template_with_multiple_photos(tpl_img: Image.Image, user_imgs: List[Image.Image]) -> bytes:
+    """
+    Основная функция обработки: находит зеленые области, сортирует их
+    и вставляет в них фото из списка user_imgs.
+    """
+    # 7.1 --- АПСКЕЙЛ ШАБЛОНА
     out_scale = OUT_DIM / max(tpl_img.size) if max(tpl_img.size) < OUT_DIM else 1.0
     tpl_big = tpl_img.resize(
         (int(tpl_img.width * out_scale), int(tpl_img.height * out_scale)),
         Image.LANCZOS
     )
-    # ограничиваем до 80 Мп (RAM-safety)
     if tpl_big.width * tpl_big.height > MAX_PIXELS_TPL:
         factor = math.sqrt(MAX_PIXELS_TPL / (tpl_big.width * tpl_big.height))
         tpl_big = tpl_big.resize(
@@ -209,156 +213,114 @@ def process_template_photo(tpl_img: Image.Image, user_img: Image.Image) -> bytes
         )
         out_scale *= factor
 
-    tpl_rgba = tpl_big.convert("RGBA")
+    res = tpl_big.convert("RGBA")
 
-    # 7.2 --- ПОИСК ЗЕЛЁНОЙ ОБЛАСТИ
-    b, g, r, _ = np.asarray(tpl_rgba).transpose(2, 0, 1)
-    mask = ((g > 200) & (r < 100) & (b < 100)).astype(np.uint8) * 255
+    # 7.2 --- ПОИСК И СОРТИРОВКА ЗЕЛЕНЫХ ОБЛАСТЕЙ
+    # Используем оригинальный, не масштабированный шаблон для поиска
+    sorted_contours = find_and_sort_green_areas(tpl_img)
+    
+    if not sorted_contours:
+        return _save_png(res)
 
-    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not cnts:
-        return _save_png(tpl_rgba)  # зелёного нет → отдаём шаблон без изменений
-    cnt = max(cnts, key=cv2.contourArea)
-
-    # 7.3 --- ПРОВЕРКА: 4-угольник или нет
-    peri = cv2.arcLength(cnt, True)
-    approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
-    persp = len(approx) == 4  # True → перспективная вставка
-
-    if persp:
-        # • координаты 4 точек + «запас»
-        quad = order_corners([p[0] for p in approx])
-        center = quad.mean(0, keepdims=True)
-        vecs = quad - center
-        lens = np.linalg.norm(vecs, 1, keepdims=True)
-        quad = quad + vecs / (lens + 1e-6) * scale_pixels * out_scale
-
-        # размеры прямоугольника
-        wA, hA = np.linalg.norm(quad[0] - quad[1]), np.linalg.norm(quad[0] - quad[3])
-        wB, hB = np.linalg.norm(quad[2] - quad[3]), np.linalg.norm(quad[1] - quad[2])
-        long_side, short_side = int(max(hA, hB)), int(max(wA, wB))
-    else:
-        # fallback: minAreaRect
-        (cx0, cy0), (w0, h0), ang = cv2.minAreaRect(cnt)
-        long_side, short_side = int(max(w0, h0)), int(min(w0, h0))
-
-    # 7.4 --- СОЗДАЁМ «МОНОЛИТ» (фото + фильтр) С НУЖНЫМИ РАЗМЕРАМИ
-    H = int((long_side + scale_pixels * out_scale) * upscale_factor) * SCALE_MONO
-    W = int((short_side + scale_pixels * out_scale) * upscale_factor) * SCALE_MONO
-
-    # ► 7.4.1 фото пользователя – масштаб «по длинной стороне» + центр-обрезка
-    usr_big = user_img.convert("RGBA").resize(
-        (int(user_img.width * upscale_factor * SCALE_MONO),
-         int(user_img.height * upscale_factor * SCALE_MONO)),
-        Image.LANCZOS
-    )
-    # берём большее из коэффициентов → заполняем всю область
-    sc_fill = max(W / usr_big.width, H / usr_big.height)
-    usr_fill = usr_big.resize(
-        (int(usr_big.width * sc_fill), int(usr_big.height * sc_fill)),
-        Image.BICUBIC if sc_fill > 1 else Image.LANCZOS
-    )
-    lft = (usr_fill.width - W) // 2
-    top = (usr_fill.height - H) // 2
-    cropped = usr_fill.crop((lft, top, lft + W, top + H))
-
-    # ► 7.4.2 PNG-фильтр с прозрачной тенью 22 px
-    if not os.path.exists(filter_path):
-        logging.error(f"Файл фильтра {filter_path} не найден!")
-        # Можно либо вернуть ошибку, либо продолжить без фильтра
-        # Для примера, продолжим без фильтра, но залогируем
-        mono = cropped # Без фильтра
-    else:
-        filt = Image.open(filter_path).convert("RGBA").resize((W, H), Image.LANCZOS)
-        # ► 7.4.3 композим фото + фильтр
-        mono = Image.new("RGBA", filt.size, (0, 0, 0, 0))
-        mono.paste(cropped, (0, 0)) # Убрали cropped из paste, т.к. он уже RGBA
-        mono = Image.alpha_composite(mono, filt)
-
-
-    # ► 7.4.4 небольшой случайный поворот «монолита»
-    mono = mono.rotate(
-        random.choice([-1, 1]) * random.uniform(min_rotation, max_rotation),
-        expand=True,
-        resample=Image.BICUBIC
-    )
-
-    # после вращения уменьшаем до «обычного» масштаба
-    mono = mono.resize((mono.width // SCALE_MONO, mono.height // SCALE_MONO), Image.LANCZOS)
-
-    # случайный сдвиг +/- dx,dy
-    dx = random.choice([-1, 1]) * random.randint(min_shift, max_shift)
-    dy = random.choice([-1, 1]) * random.randint(min_shift, max_shift)
-
-    # 7.5 --- ВСТАВКА «МОНОЛИТА» В ШАБЛОН
-    if persp:
-        # ► Перспективная вставка (4 точки)
-        src = np.array(
-            [
-                [0, 0],
-                [W // SCALE_MONO, 0],
-                [W // SCALE_MONO, (H + 30) // SCALE_MONO], # +30 было, оставляем для совместимости
-                [0, (H + 30) // SCALE_MONO],
-            ],
-            dtype="float32",
-        )
-        quad_shift = quad + np.array([dx, dy], dtype="float32")
-        M = cv2.getPerspectiveTransform(src, quad_shift)
-
-        canvas_bgr = cv2.cvtColor(np.asarray(tpl_rgba), cv2.COLOR_RGBA2BGRA)
-        mono_bgr = cv2.cvtColor(np.asarray(mono), cv2.COLOR_RGBA2BGRA)
-
-        warp = cv2.warpPerspective(
-            mono_bgr,
-            M,
-            dsize=tpl_rgba.size, # dsize должен быть (width, height)
-            flags=cv2.INTER_LANCZOS4,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=(0, 0, 0, 0),
-        )
-
-        alpha = warp[:, :, 3:4] / 255.0
-        canvas_bgr[:, :, :3] = canvas_bgr[:, :, :3] * (1 - alpha) + warp[:, :, :3] * alpha
-        res = Image.fromarray(cv2.cvtColor(canvas_bgr, cv2.COLOR_BGRA2RGBA), "RGBA")
-    else:
-        # ► minAreaRect (почти как в старом коде, но с актуальным dx/dy)
-        (cx, cy), (w_rect, h_rect), ang_rect = cv2.minAreaRect(cnt) # переименовал w0, h0, ang
+    # Итерируемся по отсортированным контурам и предоставленным фото
+    # min(len(..)) для безопасности, если фото прислали меньше чем надо
+    for i in range(min(len(sorted_contours), len(user_imgs))):
+        cnt = sorted_contours[i]
+        user_img = user_imgs[i]
         
-        effective_angle = ang_rect
-        if w_rect < h_rect: 
-             mono_rot = mono.rotate(-effective_angle, expand=True, resample=Image.BICUBIC)
-        else: 
-             mono_rot = mono.rotate(-effective_angle - 90, expand=True, resample=Image.BICUBIC)
+        # Масштабируем контур в соответствии с апскейлом шаблона
+        scaled_cnt = (cnt * out_scale).astype(np.int32)
 
-        layer = Image.new("RGBA", tpl_rgba.size, (0, 0, 0, 0))
-        paste_x = int(cx + dx - mono_rot.width / 2)
-        paste_y = int(cy + dy - mono_rot.height / 2)
-        layer.paste(mono_rot, (paste_x, paste_y), mono_rot)
-        res = Image.alpha_composite(tpl_rgba, layer)
+        # 7.3 --- ПРОВЕРКА: 4-угольник или нет
+        peri = cv2.arcLength(scaled_cnt, True)
+        approx = cv2.approxPolyDP(scaled_cnt, 0.02 * peri, True)
+        persp = len(approx) == 4
 
-    # 7.6 --- РАЗМЫТИЕ ЛЕВОЙ КРОМКИ
-    if thickness > 0 and box_blur_radius > 0: 
-        if res.width >= thickness : 
-            strip = res.crop((0, 0, thickness, res.height))
-            res.paste(strip.filter(ImageFilter.BoxBlur(box_blur_radius)), (0, 0))
+        if persp:
+            quad = order_corners([p[0] for p in approx])
+            center = quad.mean(0, keepdims=True)
+            vecs = quad - center
+            lens = np.linalg.norm(vecs, 1, keepdims=True)
+            quad = quad + vecs / (lens + 1e-6) * scale_pixels * out_scale
+            wA, hA = np.linalg.norm(quad[0] - quad[1]), np.linalg.norm(quad[0] - quad[3])
+            wB, hB = np.linalg.norm(quad[2] - quad[3]), np.linalg.norm(quad[1] - quad[2])
+            long_side, short_side = int(max(hA, hB)), int(max(wA, wB))
         else:
-            logging.warning("Толщина для размытия больше ширины изображения, размытие пропущено.")
+            (cx0, cy0), (w0, h0), ang = cv2.minAreaRect(scaled_cnt)
+            long_side, short_side = int(max(w0, h0)), int(min(w0, h0))
+        
+        if long_side == 0 or short_side == 0: continue # Пропускаем вырожденные области
 
+        # 7.4 --- СОЗДАЕМ «МОНОЛИТ»
+        H = int((long_side + scale_pixels * out_scale) * upscale_factor) * SCALE_MONO
+        W = int((short_side + scale_pixels * out_scale) * upscale_factor) * SCALE_MONO
+        if W == 0 or H == 0: continue
 
-    # 7.7 --- ПАКОВКА (PNG ≤10 МБ, иначе JPEG с подбором качества)
+        usr_big = user_img.convert("RGBA").resize(
+            (int(user_img.width * upscale_factor * SCALE_MONO), int(user_img.height * upscale_factor * SCALE_MONO)),
+            Image.LANCZOS
+        )
+        sc_fill = max(W / usr_big.width, H / usr_big.height)
+        usr_fill = usr_big.resize(
+            (int(usr_big.width * sc_fill), int(usr_big.height * sc_fill)),
+            Image.BICUBIC if sc_fill > 1 else Image.LANCZOS
+        )
+        lft, top = (usr_fill.width - W) // 2, (usr_fill.height - H) // 2
+        cropped = usr_fill.crop((lft, top, lft + W, top + H))
+
+        mono = cropped # По умолчанию, если фильтра нет
+        if os.path.exists(filter_path):
+            filt = Image.open(filter_path).convert("RGBA").resize((W, H), Image.LANCZOS)
+            mono = Image.new("RGBA", filt.size, (0, 0, 0, 0))
+            mono.paste(cropped, (0, 0))
+            mono = Image.alpha_composite(mono, filt)
+
+        mono = mono.rotate(
+            random.choice([-1, 1]) * random.uniform(min_rotation, max_rotation),
+            expand=True, resample=Image.BICUBIC
+        )
+        mono = mono.resize((mono.width // SCALE_MONO, mono.height // SCALE_MONO), Image.LANCZOS)
+        dx, dy = random.choice([-1, 1]) * random.randint(min_shift, max_shift), random.choice([-1, 1]) * random.randint(min_shift, max_shift)
+
+        # 7.5 --- ВСТАВКА «МОНОЛИТА»
+        if persp:
+            src = np.array([[0, 0], [W // SCALE_MONO, 0], [W // SCALE_MONO, H // SCALE_MONO], [0, H // SCALE_MONO]], dtype="float32")
+            quad_shift = quad + np.array([dx, dy], dtype="float32")
+            M = cv2.getPerspectiveTransform(src, quad_shift)
+            canvas_bgr = cv2.cvtColor(np.asarray(res), cv2.COLOR_RGBA2BGRA)
+            mono_bgr = cv2.cvtColor(np.asarray(mono), cv2.COLOR_RGBA2BGRA)
+            warp = cv2.warpPerspective(
+                mono_bgr, M, dsize=res.size, flags=cv2.INTER_LANCZOS4,
+                borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0)
+            )
+            alpha = warp[:, :, 3:4] / 255.0
+            canvas_bgr[:, :, :3] = canvas_bgr[:, :, :3] * (1 - alpha) + warp[:, :, :3] * alpha
+            res = Image.fromarray(cv2.cvtColor(canvas_bgr, cv2.COLOR_BGRA2RGBA), "RGBA")
+        else:
+            (cx, cy), (w_rect, h_rect), ang_rect = cv2.minAreaRect(scaled_cnt)
+            effective_angle = ang_rect
+            if w_rect < h_rect: mono_rot = mono.rotate(-effective_angle, expand=True, resample=Image.BICUBIC)
+            else: mono_rot = mono.rotate(-effective_angle - 90, expand=True, resample=Image.BICUBIC)
+            layer = Image.new("RGBA", res.size, (0, 0, 0, 0))
+            paste_x, paste_y = int(cx + dx - mono_rot.width / 2), int(cy + dy - mono_rot.height / 2)
+            layer.paste(mono_rot, (paste_x, paste_y), mono_rot)
+            res = Image.alpha_composite(res, layer)
+
+    # 7.6 --- РАЗМЫТИЕ ЛЕВОЙ КРОМКИ (применяется ко всему итоговому изображению)
+    if thickness > 0 and box_blur_radius > 0 and res.width >= thickness:
+        strip = res.crop((0, 0, thickness, res.height))
+        res.paste(strip.filter(ImageFilter.BoxBlur(box_blur_radius)), (0, 0))
+
+    # 7.7 --- ПАКОВКА
     png_bytes = _save_png(res)
-    if len(png_bytes) <= TG_PHOTO_LIMIT:
-        return png_bytes
-
+    if len(png_bytes) <= TG_PHOTO_LIMIT: return png_bytes
     for q in (95, 90, 85, 80, 75, 70, 65):
         jpg_bytes = _save_jpeg(res, q)
-        if len(jpg_bytes) <= TG_PHOTO_LIMIT:
-            return jpg_bytes
-    return _save_jpeg(res, 50)  # fallback
-
+        if len(jpg_bytes) <= TG_PHOTO_LIMIT: return jpg_bytes
+    return _save_jpeg(res, 50)
 
 # ────────────────────────────────────────────────────────────────────
-# ► 8. ХРАНИЛИЩЕ СОСТОЯНИЙ ПОЛЬЗОВАТЕЛЕЙ (chat_id → dict)
+# ► 8. ХРАНИЛИЩЕ СОСТОЯНИЙ
 # ────────────────────────────────────────────────────────────────────
 user_state: Dict[int, Dict[str, Any]] = {}
 
@@ -366,79 +328,142 @@ user_state: Dict[int, Dict[str, Any]] = {}
 # ► 9. ХЕНДЛЕРЫ БОТА
 # ────────────────────────────────────────────────────────────────────
 def common_access_check(user_id: int, chat_id: int) -> bool:
-    """Общая проверка доступа для хендлеров."""
     if user_id not in ALLOWED_USER_IDS:
         bot.send_message(chat_id, MSG_NO_ACCESS)
         return False
     return True
 
 def common_access_check_callback(call) -> bool:
-    """Общая проверка доступа для callback хендлеров."""
     if call.from_user.id not in ALLOWED_USER_IDS:
         bot.answer_callback_query(call.id, MSG_NO_ACCESS, show_alert=True)
         return False
     return True
 
 def get_display_template_name(tpl_file_name: str, persona_name_str: str) -> str:
-    """Формирует отображаемое имя шаблона, удаляя префикс персонажа."""
     base_name = get_template_name_without_extension(tpl_file_name)
     prefix_to_remove = f"{persona_name_str}_"
-    display_name = base_name
-    if base_name.startswith(prefix_to_remove):
-        display_name = base_name[len(prefix_to_remove):]
+    display_name = base_name[len(prefix_to_remove):] if base_name.startswith(prefix_to_remove) else base_name
     return display_name.capitalize()
 
-
-@bot.callback_query_handler(func=lambda c: c.data == "start_over") 
-def cb_start_again(call) -> None:
-    """Перезапуск по кнопке — аналог /start."""
-    if not common_access_check_callback(call):
+def request_next_photo(chat_id: int, message_id: Optional[int] = None):
+    """Запрашивает следующее фото или запускает обработку, если все собраны."""
+    state = user_state.get(chat_id)
+    if not state or state.get("state") != "waiting_photos":
         return
+
+    required = state.get("required_photos", 0)
+    photos = state.get("photos", [])
+    
+    if len(photos) < required:
+        # Запрашиваем следующее фото
+        msg = MSG_SEND_PHOTO.format(current_num=len(photos) + 1, total_num=required)
+        if message_id:
+            bot.edit_message_text(msg, chat_id, message_id)
+        else:
+            bot.send_message(chat_id, msg)
+    else:
+        # Все фото собраны, запускаем обработку
+        processing_msg = bot.send_message(chat_id, MSG_PROCESSING)
+        
+        try:
+            relative_tpl_path = state["template_file"]
+            tpl_path = os.path.join(templates_dir, relative_tpl_path)
+            
+            template_img = Image.open(tpl_path)
+            user_imgs = [Image.open(io.BytesIO(p_bytes)) for p_bytes in photos]
+            
+            result_bytes = process_template_with_multiple_photos(template_img, user_imgs)
+
+            template_img.close()
+            for img in user_imgs: img.close()
+
+            logging.info(f"Изображение обработано успешно | chat={chat_id} result_size={len(result_bytes)} bytes")
+            kb = InlineKeyboardMarkup().add(InlineKeyboardButton(BTN_REGENERATE, callback_data="start_over"))
+
+            try: bot.delete_message(chat_id, processing_msg.message_id)
+            except Exception: pass
+
+            if len(result_bytes) <= TG_PHOTO_LIMIT:
+                bot.send_photo(chat_id, result_bytes, caption=MSG_DONE, reply_markup=kb)
+            else:
+                fname = "result.png" if result_bytes.startswith(b'\x89PNG') else "result.jpg"
+                bot.send_document(chat_id, (fname, result_bytes), caption=MSG_DONE, reply_markup=kb)
+
+            # Сбрасываем состояние для этого пользователя
+            user_state[chat_id] = {}
+
+        except Exception as e:
+            logging.exception(f"Ошибка при финальной обработке медиа | chat={chat_id}")
+            bot.send_message(chat_id, MSG_ERROR_INTERNAL)
+            kb_error = InlineKeyboardMarkup().add(InlineKeyboardButton("Начать заново", callback_data="start_over"))
+            bot.send_message(chat_id, "Попробуйте начать заново.", reply_markup=kb_error)
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "start_over")
+def cb_start_again(call) -> None:
+    if not common_access_check_callback(call): return
     bot.answer_callback_query(call.id)
     cmd_start(call.message, from_callback=True)
 
-
 @bot.message_handler(commands=["start"])
 def cmd_start(msg: Message, from_callback: bool = False) -> None:
-    """Старт: выбор персонажа."""
-    if not from_callback and not common_access_check(msg.from_user.id, msg.chat.id):
-        return
-
+    if not from_callback and not common_access_check(msg.from_user.id, msg.chat.id): return
     chat_id = msg.chat.id
-    user_state[chat_id] = {} 
-
+    user_state[chat_id] = {}
     personas = get_personas()
     if not personas:
-        bot.send_message(chat_id, "Персонажи не найдены. Проверьте конфигурацию.")
+        bot.send_message(chat_id, "Персонажи не найдены.")
+        return
+    kb = InlineKeyboardMarkup()
+    for p_name in personas: kb.add(InlineKeyboardButton(p_name, callback_data=f"persona_{p_name}"))
+    
+    if from_callback:
+        try: bot.edit_message_text(MSG_SELECT_PERSONA, chat_id, msg.message_id, reply_markup=kb)
+        except Exception as e: bot.send_message(chat_id, MSG_SELECT_PERSONA, reply_markup=kb)
+    else: bot.send_message(chat_id, MSG_SELECT_PERSONA, reply_markup=kb)
+
+
+def set_template_and_start_photo_collection(chat_id: int, message_id: int, template_relative_path: str):
+    """
+    Анализирует шаблон, обновляет состояние и запрашивает первое фото.
+    """
+    full_tpl_path = os.path.join(templates_dir, template_relative_path)
+    if not os.path.exists(full_tpl_path):
+        bot.edit_message_text(MSG_TEMPLATE_NOT_FOUND, chat_id, message_id)
+        return
+    
+    try:
+        with Image.open(full_tpl_path) as tpl_img:
+            # Анализируем, сколько областей в шаблоне
+            num_areas = len(find_and_sort_green_areas(tpl_img))
+    except Exception as e:
+        logging.error(f"Не удалось проанализировать шаблон {full_tpl_path}: {e}")
+        bot.edit_message_text("Не удалось обработать файл шаблона.", chat_id, message_id)
         return
 
-    kb = InlineKeyboardMarkup()
-    for p_name in personas:
-        kb.add(InlineKeyboardButton(p_name, callback_data=f"persona_{p_name}"))
-    
-    # Если сообщение пришло от callback (т.е. это перезапуск), редактируем его
-    if from_callback:
-        try:
-            bot.edit_message_text(MSG_SELECT_PERSONA, chat_id, msg.message_id, reply_markup=kb)
-        except Exception as e: # Если не получилось отредактировать (например, сообщение слишком старое), отправляем новое
-            logging.warning(f"Не удалось отредактировать сообщение при перезапуске: {e}")
-            bot.send_message(chat_id, MSG_SELECT_PERSONA, reply_markup=kb)
-    else: # Иначе, отправляем новое сообщение
-        bot.send_message(chat_id, MSG_SELECT_PERSONA, reply_markup=kb)
+    if num_areas == 0:
+        bot.edit_message_text("В этом шаблоне не найдено областей для вставки.", chat_id, message_id)
+        return
+
+    # Обновляем состояние пользователя
+    user_state[chat_id]["template_file"] = template_relative_path
+    user_state[chat_id]["state"] = "waiting_photos" # Новое состояние
+    user_state[chat_id]["required_photos"] = num_areas
+    user_state[chat_id]["photos"] = [] # Список для хранения байтов фото
+
+    # Запрашиваем первое фото
+    request_next_photo(chat_id, message_id=message_id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("persona_"))
 def cb_persona(call) -> None:
-    """После выбора персонажа."""
-    if not common_access_check_callback(call):
-        return
-
+    if not common_access_check_callback(call): return
     chat_id = call.message.chat.id
     persona_name = call.data.split("_", 1)[1]
-    user_state[chat_id] = {"persona": persona_name} 
-
-    bot.answer_callback_query(call.id) 
-
+    user_state[chat_id] = {"persona": persona_name}
+    bot.answer_callback_query(call.id)
+    # ... (логика выбора этапа или шаблона) ...
+    # Эта часть остается похожей, но в конце вызывает set_template_and_start_photo_collection
     persona_path = os.path.join(templates_dir, persona_name)
     stages = get_stages_for_persona(persona_name)
 
@@ -446,168 +471,95 @@ def cb_persona(call) -> None:
         kb = InlineKeyboardMarkup()
         for stage_val, stage_label in stages:
             kb.add(InlineKeyboardButton(stage_label, callback_data=f"stage_{stage_val}"))
-        user_state[chat_id]["state"] = "choosing_stage"
         bot.edit_message_text(MSG_SELECT_STAGE, chat_id, call.message.message_id, reply_markup=kb)
-    else:
+    else: # Нет этапов, сразу шаблоны
         templates_list = get_templates_in_path(persona_path)
         if len(templates_list) == 1:
-            user_state[chat_id]["template_file"] = os.path.join(persona_name, templates_list[0])
-            user_state[chat_id]["state"] = "waiting_photo"
-            bot.edit_message_text(MSG_SEND_PHOTO, chat_id, call.message.message_id)
+            template_path = os.path.join(persona_name, templates_list[0])
+            set_template_and_start_photo_collection(chat_id, call.message.message_id, template_path)
         elif len(templates_list) > 1:
             kb = InlineKeyboardMarkup()
             for tpl_file in templates_list:
-                ### ИЗМЕНЕНИЕ ###
-                # Используем новую функцию для получения имени кнопки
                 button_label = get_display_template_name(tpl_file, persona_name)
                 kb.add(InlineKeyboardButton(button_label, callback_data=f"template_{persona_name}/{tpl_file}"))
-            user_state[chat_id]["state"] = "choosing_template"
             bot.edit_message_text(MSG_SELECT_TEMPLATE, chat_id, call.message.message_id, reply_markup=kb)
         else:
             bot.edit_message_text(MSG_NO_TEMPLATES_FOUND, chat_id, call.message.message_id)
-            logging.warning(f"Нет шаблонов в {persona_path} для персонажа {persona_name}")
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("stage_"))
 def cb_stage(call) -> None:
-    """После выбора этапа."""
-    if not common_access_check_callback(call):
-        return
-
+    if not common_access_check_callback(call): return
     chat_id = call.message.chat.id
     stage_val = call.data.split("_", 1)[1]
-
     if "persona" not in user_state.get(chat_id, {}):
-        bot.answer_callback_query(call.id, "Ошибка состояния, начните заново /start", show_alert=True)
-        cmd_start(call.message, from_callback=True) 
-        return
-
+        cmd_start(call.message, from_callback=True); return
     user_state[chat_id]["stage"] = stage_val
     bot.answer_callback_query(call.id)
-
     persona_name = user_state[chat_id]["persona"]
     current_path = os.path.join(templates_dir, persona_name, stage_val)
     templates_list = get_templates_in_path(current_path)
-
+    
     if len(templates_list) == 1:
-        user_state[chat_id]["template_file"] = os.path.join(persona_name, stage_val, templates_list[0])
-        user_state[chat_id]["state"] = "waiting_photo"
-        bot.edit_message_text(MSG_SEND_PHOTO, chat_id, call.message.message_id)
+        template_path = os.path.join(persona_name, stage_val, templates_list[0])
+        set_template_and_start_photo_collection(chat_id, call.message.message_id, template_path)
     elif len(templates_list) > 1:
         kb = InlineKeyboardMarkup()
         for tpl_file in templates_list:
-            ### ИЗМЕНЕНИЕ ###
-            # Используем новую функцию для получения имени кнопки
             button_label = get_display_template_name(tpl_file, persona_name)
             kb.add(InlineKeyboardButton(button_label, callback_data=f"template_{persona_name}/{stage_val}/{tpl_file}"))
-        user_state[chat_id]["state"] = "choosing_template"
         bot.edit_message_text(MSG_SELECT_TEMPLATE, chat_id, call.message.message_id, reply_markup=kb)
     else:
         bot.edit_message_text(MSG_NO_TEMPLATES_FOUND, chat_id, call.message.message_id)
-        logging.warning(f"Нет шаблонов в {current_path} для персонажа {persona_name}, этап {stage_val}")
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("template_"))
 def cb_template_selection(call) -> None:
-    """После выбора конкретного шаблона (если их было несколько)."""
-    if not common_access_check_callback(call):
-        return
-
+    if not common_access_check_callback(call): return
     chat_id = call.message.chat.id
     template_relative_path = call.data.split("_", 1)[1]
-    
     if "persona" not in user_state.get(chat_id, {}):
-        bot.answer_callback_query(call.id, "Ошибка состояния, начните заново /start", show_alert=True)
-        cmd_start(call.message, from_callback=True) 
-        return
-
-    user_state[chat_id]["template_file"] = template_relative_path
-    user_state[chat_id]["state"] = "waiting_photo"
+        cmd_start(call.message, from_callback=True); return
     bot.answer_callback_query(call.id)
-    bot.edit_message_text(MSG_SEND_PHOTO, chat_id, call.message.message_id)
+    set_template_and_start_photo_collection(chat_id, call.message.message_id, template_relative_path)
 
 
 @bot.message_handler(content_types=["photo", "document"])
 def handle_media(msg: Message) -> None:
-    """Обрабатывает входящее фото (или документ-картинку)."""
     chat_id = msg.chat.id
-    if not common_access_check(msg.from_user.id, chat_id):
-        return
+    if not common_access_check(msg.from_user.id, chat_id): return
 
-    current_user_state = user_state.get(chat_id, {})
-    if current_user_state.get("state") != "waiting_photo":
+    state = user_state.get(chat_id, {})
+    if state.get("state") != "waiting_photos":
         bot.send_message(chat_id, MSG_START_FIRST)
         return
 
-    if "template_file" not in current_user_state:
-        logging.error(f"Состояние waiting_photo, но template_file не установлен для чата {chat_id}")
-        bot.send_message(chat_id, MSG_ERROR_INTERNAL + " (template_file is missing)")
-        cmd_start(msg) 
-        return
-
     try:
-        relative_tpl_path = current_user_state["template_file"]
-        tpl_path = os.path.join(templates_dir, relative_tpl_path)
-
-        if not os.path.exists(tpl_path):
-            bot.send_message(chat_id, MSG_TEMPLATE_NOT_FOUND)
-            logging.warning(f"Шаблон не найден при обработке | chat={chat_id} path={tpl_path}")
-            user_state[chat_id] = {}
-            cmd_start(msg)
-            return
-
-        logging.debug(f"Шаблон выбран | chat={chat_id} path={tpl_path}")
-
         if msg.content_type == "photo":
             file_id = msg.photo[-1].file_id
-        elif msg.document and msg.document.mime_type and msg.document.mime_type.startswith("image/"): # Добавлена проверка msg.document
+        elif msg.document and msg.document.mime_type and msg.document.mime_type.startswith("image/"):
             file_id = msg.document.file_id
         else:
-            bot.reply_to(msg, "Пожалуйста, отправьте изображение как фото или как документ-картинку.")
+            bot.reply_to(msg, "Пожалуйста, отправьте изображение.")
             return
-            
+
         file_info = bot.get_file(file_id)
         downloaded_file_bytes = bot.download_file(file_info.file_path)
-        user_img = Image.open(io.BytesIO(downloaded_file_bytes))
 
-        logging.debug(f"Изображение пользователя загружено | chat={chat_id} size={user_img.size}")
-
-        processing_msg = bot.send_message(chat_id, MSG_PROCESSING)
-
-        template_img = Image.open(tpl_path)
-        result_bytes = process_template_photo(template_img, user_img)
-        template_img.close()
-        user_img.close()
-
-
-        logging.info(f"Изображение обработано успешно | chat={chat_id} result_size={len(result_bytes)} bytes")
-
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton(BTN_REGENERATE, callback_data="start_over"))
-
-        try:
-            bot.delete_message(chat_id, processing_msg.message_id)
-        except Exception as e:
-            logging.warning(f"Не удалось удалить сообщение о обработке: {e}")
-
-        if len(result_bytes) <= TG_PHOTO_LIMIT:
-            bot.send_photo(chat_id, result_bytes, caption=MSG_DONE, reply_markup=kb)
-        else:
-            output_filename = "result.jpg" 
-            if result_bytes.startswith(b'\x89PNG\r\n\x1a\n'): 
-                 output_filename = "result.png"
-            bot.send_document(chat_id, (output_filename, result_bytes),
-                              caption=MSG_DONE, reply_markup=kb)
-
-        user_state[chat_id] = {"persona": current_user_state.get("persona")} 
+        # Добавляем байты фото в состояние
+        user_state[chat_id]["photos"].append(downloaded_file_bytes)
+        logging.debug(f"Фото {len(user_state[chat_id]['photos'])}/{user_state[chat_id]['required_photos']} получено | chat={chat_id}")
+        
+        # Удаляем сообщение с просьбой прислать фото
+        try: bot.delete_message(chat_id, msg.message_id)
+        except Exception: pass
+        
+        # Запрашиваем следующее фото или запускаем обработку
+        request_next_photo(chat_id)
 
     except Exception as e:
         logging.exception(f"Ошибка при обработке медиа | chat={chat_id}")
         bot.send_message(chat_id, MSG_ERROR_INTERNAL)
-        kb_error = InlineKeyboardMarkup()
-        kb_error.add(InlineKeyboardButton("Начать заново", callback_data="start_over"))
-        bot.send_message(chat_id, "Попробуйте начать заново.", reply_markup=kb_error)
-
 
 # ────────────────────────────────────────────────────────────────────
 # ► 10. ТОЧКА ВХОДА
@@ -619,7 +571,7 @@ if __name__ == "__main__":
         logging.info("Запуск бота...")
         try:
             bot.remove_webhook()
-            bot.infinity_polling(skip_pending=True) 
+            bot.infinity_polling(skip_pending=True)
         except Exception as e:
             logging.exception("Неожиданная ошибка в главном цикле бота")
             sys.exit(1)
