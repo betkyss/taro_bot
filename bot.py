@@ -63,6 +63,7 @@ MIN_CONTOUR_AREA = 1000 # Минимальная площадь зеленой �
 MSG_SELECT_PERSONA   = "🎭 Выберите персонажа:"
 MSG_SELECT_STAGE     = "📟 Выберите этап"
 MSG_SELECT_TEMPLATE  = "🖼️ Выберите шаблон"
+MSG_SELECT_VARIANT   = "🔢 Выберите вариант"
 MSG_SEND_PHOTO       = "📥 Отправь фото {current_num} из {total_num}" # ИЗМЕНЕНО
 MSG_PROCESSING       = "⏳ Идёт обработка…"
 MSG_DONE             = "✅ Готово!"
@@ -144,6 +145,27 @@ def get_templates_in_path(current_path: str) -> List[str]:
             if os.path.isfile(item_path) and item.lower().endswith(VALID_IMAGE_EXTENSIONS):
                 templates.append(item)
     return sorted(templates)
+
+def group_templates_by_basename(current_path: str) -> Dict[str, Dict[int, str]]:
+    """\
+    Возвращает словарь групп шаблонов вида {basename: {number: filename}}.
+
+    basename -- имя файла без суффикса _1/_2 и расширения. number -- 1, 2, ...
+    """
+    groups: Dict[str, Dict[int, str]] = {}
+    for fname in get_templates_in_path(current_path):
+        base = get_template_name_without_extension(fname)
+        if base.endswith("_1") or base.endswith("_2"):
+            key = base[:-2]
+            try:
+                num = int(base[-1])
+            except ValueError:
+                num = 1
+        else:
+            key = base
+            num = 1
+        groups.setdefault(key, {})[num] = fname
+    return groups
 
 def get_template_name_without_extension(filename: str) -> str:
     return os.path.splitext(filename)[0]
@@ -470,6 +492,40 @@ def set_template_and_start_photo_collection(chat_id: int, message_id: int, templ
     request_next_photo(chat_id, message_id=message_id)
 
 
+def _show_variant_options(chat_id: int, message_id: int, rel_dir: str, variants: Dict[int, str]):
+    """Показывает выбор между вариантами _1/_2, если их несколько."""
+    kb = InlineKeyboardMarkup()
+    for num, fname in sorted(variants.items()):
+        label = f"{num} фото" if num in (1, 2) else str(num)
+        kb.add(InlineKeyboardButton(label, callback_data=f"template_{rel_dir}/{fname}"))
+    bot.edit_message_text(MSG_SELECT_VARIANT, chat_id, message_id, reply_markup=kb)
+
+
+def _handle_template_groups(chat_id: int, message_id: int, persona_name: str, stage_val: Optional[str], current_path: str):
+    """Обрабатывает группировку шаблонов и вывод выбора пользователю."""
+    groups = group_templates_by_basename(current_path)
+    if not groups:
+        bot.edit_message_text(MSG_NO_TEMPLATES_FOUND, chat_id, message_id)
+        return
+
+    rel_dir = os.path.join(persona_name, stage_val) if stage_val else persona_name
+
+    if len(groups) == 1:
+        base, variants = next(iter(groups.items()))
+        if len(variants) == 1:
+            file = next(iter(variants.values()))
+            template_path = os.path.join(rel_dir, file)
+            set_template_and_start_photo_collection(chat_id, message_id, template_path)
+        else:
+            _show_variant_options(chat_id, message_id, rel_dir, variants)
+    else:
+        kb = InlineKeyboardMarkup()
+        for base, variants in sorted(groups.items()):
+            display_name = get_display_template_name(list(variants.values())[0], persona_name)
+            kb.add(InlineKeyboardButton(display_name, callback_data=f"tplgrp_{rel_dir}/{base}"))
+        bot.edit_message_text(MSG_SELECT_TEMPLATE, chat_id, message_id, reply_markup=kb)
+
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("persona_"))
 def cb_persona(call) -> None:
     if not common_access_check_callback(call): return
@@ -487,19 +543,8 @@ def cb_persona(call) -> None:
         for stage_val, stage_label in stages:
             kb.add(InlineKeyboardButton(stage_label, callback_data=f"stage_{stage_val}"))
         bot.edit_message_text(MSG_SELECT_STAGE, chat_id, call.message.message_id, reply_markup=kb)
-    else: # Нет этапов, сразу шаблоны
-        templates_list = get_templates_in_path(persona_path)
-        if len(templates_list) == 1:
-            template_path = os.path.join(persona_name, templates_list[0])
-            set_template_and_start_photo_collection(chat_id, call.message.message_id, template_path)
-        elif len(templates_list) > 1:
-            kb = InlineKeyboardMarkup()
-            for tpl_file in templates_list:
-                button_label = get_display_template_name(tpl_file, persona_name)
-                kb.add(InlineKeyboardButton(button_label, callback_data=f"template_{persona_name}/{tpl_file}"))
-            bot.edit_message_text(MSG_SELECT_TEMPLATE, chat_id, call.message.message_id, reply_markup=kb)
-        else:
-            bot.edit_message_text(MSG_NO_TEMPLATES_FOUND, chat_id, call.message.message_id)
+    else:  # Нет этапов, сразу шаблоны
+        _handle_template_groups(chat_id, call.message.message_id, persona_name, None, persona_path)
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("stage_"))
@@ -513,19 +558,36 @@ def cb_stage(call) -> None:
     bot.answer_callback_query(call.id)
     persona_name = user_state[chat_id]["persona"]
     current_path = os.path.join(templates_dir, persona_name, stage_val)
-    templates_list = get_templates_in_path(current_path)
-    
-    if len(templates_list) == 1:
-        template_path = os.path.join(persona_name, stage_val, templates_list[0])
+    _handle_template_groups(chat_id, call.message.message_id, persona_name, stage_val, current_path)
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("tplgrp_"))
+def cb_template_group(call) -> None:
+    if not common_access_check_callback(call):
+        return
+    chat_id = call.message.chat.id
+    data = call.data.split("_", 1)[1]
+    parts = data.split("/")
+    base = parts[-1]
+    rel_dir = "/".join(parts[:-1])
+    persona_name = user_state.get(chat_id, {}).get("persona")
+    if not persona_name:
+        cmd_start(call.message, from_callback=True)
+        return
+    stage_val = user_state.get(chat_id, {}).get("stage") if len(parts) > 2 else None
+    current_path = os.path.join(templates_dir, rel_dir)
+    groups = group_templates_by_basename(current_path)
+    variants = groups.get(base)
+    bot.answer_callback_query(call.id)
+    if not variants:
+        bot.edit_message_text(MSG_TEMPLATE_NOT_FOUND, chat_id, call.message.message_id)
+        return
+    if len(variants) == 1:
+        file = next(iter(variants.values()))
+        template_path = os.path.join(rel_dir, file)
         set_template_and_start_photo_collection(chat_id, call.message.message_id, template_path)
-    elif len(templates_list) > 1:
-        kb = InlineKeyboardMarkup()
-        for tpl_file in templates_list:
-            button_label = get_display_template_name(tpl_file, persona_name)
-            kb.add(InlineKeyboardButton(button_label, callback_data=f"template_{persona_name}/{stage_val}/{tpl_file}"))
-        bot.edit_message_text(MSG_SELECT_TEMPLATE, chat_id, call.message.message_id, reply_markup=kb)
     else:
-        bot.edit_message_text(MSG_NO_TEMPLATES_FOUND, chat_id, call.message.message_id)
+        _show_variant_options(chat_id, call.message.message_id, rel_dir, variants)
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("template_"))
