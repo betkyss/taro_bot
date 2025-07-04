@@ -7,7 +7,7 @@ Telegram-бот для вставки НЕСКОЛЬКИХ фотографий 
 # ────────────────────────────────────────────────────────────────────
 # ► 0. ИМПОРТЫ
 # ────────────────────────────────────────────────────────────────────
-import io, os, math, random, traceback, warnings, sys, logging, time
+import io, os, math, random, traceback, warnings, sys, logging, time, re
 from typing import Dict, Any, List, Tuple, Optional
 
 import requests
@@ -380,6 +380,7 @@ def get_display_template_name(tpl_file_name: str, persona_name_str: str) -> str:
     base_name = get_template_name_without_extension(tpl_file_name)
     prefix_to_remove = f"{persona_name_str}_"
     display_name = base_name[len(prefix_to_remove):] if base_name.startswith(prefix_to_remove) else base_name
+    display_name = re.sub(r"_[0-9]+$", "", display_name)
     return display_name.capitalize()
 
 def request_next_photo(chat_id: int, message_id: Optional[int] = None):
