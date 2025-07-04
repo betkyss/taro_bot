@@ -268,23 +268,9 @@ def process_template_with_multiple_photos(tpl_img: Image.Image, user_imgs: List[
         # Масштабируем контур в соответствии с апскейлом шаблона
         scaled_cnt = (cnt * out_scale).astype(np.int32)
 
-        # 7.3 --- ПРОВЕРКА: 4-угольник или нет
-        peri = cv2.arcLength(scaled_cnt, True)
-        approx = cv2.approxPolyDP(scaled_cnt, 0.02 * peri, True)
-        persp = len(approx) == 4
-
-        if persp:
-            quad = order_corners([p[0] for p in approx])
-            center = quad.mean(0, keepdims=True)
-            vecs = quad - center
-            lens = np.linalg.norm(vecs, 1, keepdims=True)
-            quad = quad + vecs / (lens + 1e-6) * scale_pixels * out_scale
-            wA, hA = np.linalg.norm(quad[0] - quad[1]), np.linalg.norm(quad[0] - quad[3])
-            wB, hB = np.linalg.norm(quad[2] - quad[3]), np.linalg.norm(quad[1] - quad[2])
-            long_side, short_side = int(max(hA, hB)), int(max(wA, wB))
-        else:
-            (cx0, cy0), (w0, h0), ang = cv2.minAreaRect(scaled_cnt)
-            long_side, short_side = int(max(w0, h0)), int(min(w0, h0))
+        # 7.3 --- ПАРАМЕТРЫ ОБЛАСТИ
+        (cx, cy), (w_rect, h_rect), ang_rect = cv2.minAreaRect(scaled_cnt)
+        long_side, short_side = int(max(w_rect, h_rect)), int(min(w_rect, h_rect))
         
         if long_side == 0 or short_side == 0: continue # Пропускаем вырожденные области
 
@@ -320,28 +306,17 @@ def process_template_with_multiple_photos(tpl_img: Image.Image, user_imgs: List[
         dx, dy = random.choice([-1, 1]) * random.randint(min_shift, max_shift), random.choice([-1, 1]) * random.randint(min_shift, max_shift)
 
         # 7.5 --- ВСТАВКА «МОНОЛИТА»
-        if persp:
-            src = np.array([[0, 0], [W // SCALE_MONO, 0], [W // SCALE_MONO, H // SCALE_MONO], [0, H // SCALE_MONO]], dtype="float32")
-            quad_shift = quad + np.array([dx, dy], dtype="float32")
-            M = cv2.getPerspectiveTransform(src, quad_shift)
-            canvas_bgr = cv2.cvtColor(np.asarray(res), cv2.COLOR_RGBA2BGRA)
-            mono_bgr = cv2.cvtColor(np.asarray(mono), cv2.COLOR_RGBA2BGRA)
-            warp = cv2.warpPerspective(
-                mono_bgr, M, dsize=res.size, flags=cv2.INTER_LANCZOS4,
-                borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0)
-            )
-            alpha = warp[:, :, 3:4] / 255.0
-            canvas_bgr[:, :, :3] = canvas_bgr[:, :, :3] * (1 - alpha) + warp[:, :, :3] * alpha
-            res = Image.fromarray(cv2.cvtColor(canvas_bgr, cv2.COLOR_BGRA2RGBA), "RGBA")
+        # Используем заранее вычисленные параметры для поворота и позиции
+        effective_angle = ang_rect
+        if w_rect < h_rect:
+            mono_rot = mono.rotate(-effective_angle, expand=True, resample=Image.BICUBIC)
         else:
-            (cx, cy), (w_rect, h_rect), ang_rect = cv2.minAreaRect(scaled_cnt)
-            effective_angle = ang_rect
-            if w_rect < h_rect: mono_rot = mono.rotate(-effective_angle, expand=True, resample=Image.BICUBIC)
-            else: mono_rot = mono.rotate(-effective_angle - 90, expand=True, resample=Image.BICUBIC)
-            layer = Image.new("RGBA", res.size, (0, 0, 0, 0))
-            paste_x, paste_y = int(cx + dx - mono_rot.width / 2), int(cy + dy - mono_rot.height / 2)
-            layer.paste(mono_rot, (paste_x, paste_y), mono_rot)
-            res = Image.alpha_composite(res, layer)
+            mono_rot = mono.rotate(-effective_angle - 90, expand=True, resample=Image.BICUBIC)
+
+        layer = Image.new("RGBA", res.size, (0, 0, 0, 0))
+        paste_x, paste_y = int(cx + dx - mono_rot.width / 2), int(cy + dy - mono_rot.height / 2)
+        layer.paste(mono_rot, (paste_x, paste_y), mono_rot)
+        res = Image.alpha_composite(res, layer)
 
     # 7.6 --- РАЗМЫТИЕ ЛЕВОЙ КРОМКИ (применяется ко всему итоговому изображению)
     if thickness > 0 and box_blur_radius > 0 and res.width >= thickness:
