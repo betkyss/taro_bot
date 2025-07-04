@@ -3,7 +3,7 @@ version: "3.9"
 services:
   bot:
     build: .
-    container_name: my_bot_container
+    container_name: bot_taro 
     restart: unless-stopped
 
     # ─── Рабочая директория
@@ -58,4 +58,4 @@ networks:
     ipam:
       driver: default
       config:
-        - subnet: 172.31.0.0/16   # изменённый диапазон, не пересекающийся с уже существующими
+        - subnet: 172.39.0.0/16   # изменённый диапазон, не пересекающийся с уже существующими
