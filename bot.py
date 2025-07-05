@@ -274,21 +274,26 @@ def process_template_with_multiple_photos(tpl_img: Image.Image, user_imgs: List[
         persp = len(approx) == 4
 
         if persp:
+            # Для 4-угольника, мы все равно используем minAreaRect, чтобы получить
+            # наиболее точные, неискаженные размеры для создания "монолита".
+            # Это гарантирует правильные пропорции.
+            (cx0, cy0), (w0, h0), ang = cv2.minAreaRect(scaled_cnt)
+            long_side, short_side = int(max(w0, h0)), int(min(w0, h0))
+
+            # Но для вставки мы используем warpPerspective с точными углами 4-угольника.
             quad = order_corners([p[0] for p in approx])
             center = quad.mean(0, keepdims=True)
             vecs = quad - center
             lens = np.linalg.norm(vecs, 1, keepdims=True)
             quad = quad + vecs / (lens + 1e-6) * scale_pixels * out_scale
-            wA, hA = np.linalg.norm(quad[0] - quad[1]), np.linalg.norm(quad[0] - quad[3])
-            wB, hB = np.linalg.norm(quad[2] - quad[3]), np.linalg.norm(quad[1] - quad[2])
-            long_side, short_side = int(max(hA, hB)), int(max(wA, wB))
         else:
             (cx0, cy0), (w0, h0), ang = cv2.minAreaRect(scaled_cnt)
             long_side, short_side = int(max(w0, h0)), int(min(w0, h0))
-        
+
         if long_side == 0 or short_side == 0: continue # Пропускаем вырожденные области
 
         # 7.4 --- СОЗДАЕМ «МОНОЛИТ»
+        # H всегда будет длинной стороной, W - короткой. Это сохраняет консистентность.
         H = int((long_side + scale_pixels * out_scale) * upscale_factor) * SCALE_MONO
         W = int((short_side + scale_pixels * out_scale) * upscale_factor) * SCALE_MONO
         if W == 0 or H == 0: continue
@@ -321,7 +326,18 @@ def process_template_with_multiple_photos(tpl_img: Image.Image, user_imgs: List[
 
         # 7.5 --- ВСТАВКА «МОНОЛИТА»
         if persp:
-            src = np.array([[0, 0], [W // SCALE_MONO, 0], [W // SCALE_MONO, H // SCALE_MONO], [0, H // SCALE_MONO]], dtype="float32")
+            # По просьбе пользователя, добавляем искусственное растягивание по горизонтали.
+            # Мы берем исходное изображение (монолит) и делаем вид, что оно на 20 пикселей уже,
+            # обрезая по 10 пикселей слева и справа. Когда cv2.getPerspectiveTransform
+            # будет растягивать эту "узкую" версию до полного размера целевого
+            # четырехугольника (quad), изображение растянется.
+            stretch_amount = 8 # пикселей с каждой стороны
+            src = np.array([
+                [stretch_amount, 0],
+                [W // SCALE_MONO - stretch_amount, 0],
+                [W // SCALE_MONO - stretch_amount, H // SCALE_MONO],
+                [stretch_amount, H // SCALE_MONO]
+            ], dtype="float32")
             quad_shift = quad + np.array([dx, dy], dtype="float32")
             M = cv2.getPerspectiveTransform(src, quad_shift)
             canvas_bgr = cv2.cvtColor(np.asarray(res), cv2.COLOR_RGBA2BGRA)
