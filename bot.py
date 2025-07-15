@@ -195,9 +195,9 @@ def _safe_send(func, *args, **kwargs):
     for attempt in range(1, SEND_RETRIES + 1):
         try:
             return func(*args, **kwargs)
-        except requests.exceptions.ReadTimeout:
+        except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError) as e:
             logging.warning(
-                f"Timeout при отправке (попытка {attempt}/{SEND_RETRIES})")
+                f"Timeout или ошибка соединения при отправке (попытка {attempt}/{SEND_RETRIES}): {e}")
             if attempt == SEND_RETRIES:
                 raise
             time.sleep(2)
